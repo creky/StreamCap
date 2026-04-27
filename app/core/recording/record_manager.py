@@ -113,6 +113,12 @@ class RecordingManager:
     async def update_recording_card(self, recording: Recording, updated_info: dict):
         """Update an existing recording object and persist changes to a JSON file."""
         if recording:
+            if (
+                updated_info.get("url") is not None
+                and updated_info.get("url") != recording.url
+                and "live_url" not in updated_info
+            ):
+                updated_info["live_url"] = None
             recording.update(updated_info)
             self.app.page.run_task(self.persist_recordings)
 
@@ -302,7 +308,8 @@ class RecordingManager:
                 return
 
         recording.status_info = RecordingStatus.STATUS_CHECKING
-        platform, platform_key = get_platform_info(recording.url)
+        query_live_url = recording.live_url or recording.url
+        platform, platform_key = get_platform_info(query_live_url)
 
         if platform and platform_key and (recording.platform is None or recording.platform_key is None):
             recording.platform = platform
@@ -321,7 +328,7 @@ class RecordingManager:
         recording_info = {
             "platform": platform,
             "platform_key": platform_key,
-            "live_url": recording.url,
+            "live_url": query_live_url,
             "output_dir": output_dir,
             "segment_record": recording.segment_record,
             "segment_time": recording.segment_time,
@@ -334,6 +341,9 @@ class RecordingManager:
         async with semaphore:
             stream_info = await recorder.fetch_stream()
             logger.info(f"Stream Data: {stream_info}")
+        if stream_info and getattr(stream_info, "live_url", None) and recording.live_url != stream_info.live_url:
+            recording.live_url = stream_info.live_url
+            self.app.page.run_task(self.persist_recordings)
         if not stream_info or not stream_info.anchor_name:
             logger.error(f"Fetch stream data failed: {recording.url}")
             recording.is_checking = False

@@ -78,6 +78,7 @@ class Recording:
         self.showed_checking_status = False
         self.status_info = None
         self.live_title = None
+        self.live_url = None
         self.detection_time = None
         self.loop_time_seconds = None
         self.use_proxy = None
@@ -102,6 +103,7 @@ class Recording:
             "enabled_message_push": self.enabled_message_push,
             "platform": self.platform,
             "platform_key": self.platform_key,
+            "live_url": self.live_url,
             "only_notify_no_record": self.only_notify_no_record,
             "flv_use_direct_download": self.flv_use_direct_download
         }
@@ -131,6 +133,7 @@ class Recording:
         recording.last_duration_str = data.get("last_duration")
         recording.platform = data.get("platform")
         recording.platform_key = data.get("platform_key")
+        recording.live_url = data.get("live_url")
         if recording.last_duration_str is not None:
             recording.last_duration = timedelta(seconds=float(recording.last_duration_str))
         return recording

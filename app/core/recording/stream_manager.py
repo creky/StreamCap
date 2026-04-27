@@ -422,6 +422,10 @@ class LiveStreamRecorder:
             stream_info = await handler.get_stream_info(self.live_url)
             last_stream_info = stream_info
 
+            if stream_info and getattr(stream_info, "live_url", None):
+                self.live_url = stream_info.live_url
+                self.recording.live_url = stream_info.live_url
+
             if stream_info and getattr(stream_info, "anchor_name", None):
                 self.recording.is_checking = False
                 return stream_info
