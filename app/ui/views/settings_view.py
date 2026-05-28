@@ -179,7 +179,8 @@ class SettingsPage(PageBase):
 
         if key == "loop_time_seconds":
             self.app.record_manager.initialize_dynamic_state()
-        self.page.run_task(self.delay_handler.start_task_timer, self.save_user_config_after_delay, None)
+        save_delay = 0 if key == "enable_proxy" else None
+        self.page.run_task(self.delay_handler.start_task_timer, self.save_user_config_after_delay, save_delay)
         self.has_unsaved_changes['user_config'] = True
 
     def on_cookies_change(self, e):

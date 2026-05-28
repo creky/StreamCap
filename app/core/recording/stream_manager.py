@@ -70,19 +70,16 @@ class LiveStreamRecorder:
 
     def is_use_proxy(self):
         default_proxy_platform = self.user_config.get("default_platform_with_proxy", "")
-        proxy_list = default_proxy_platform.replace("，", ",").replace(" ", "").split(",")
+        proxy_list = [item for item in default_proxy_platform.replace("，", ",").replace(" ", "").split(",") if item]
         if self.user_config.get("enable_proxy") and self.platform_key in proxy_list:
             self.proxy = self.app.proxy_manager.get_proxy()
             return self.proxy
 
     def get_status_check_proxy(self):
-        if self.app.proxy_manager.is_subscription_active():
+        if self.user_config.get("enable_proxy"):
             return self.app.proxy_manager.get_status_check_proxy()
+        return None
 
-        default_proxy_platform = self.user_config.get("default_platform_with_proxy", "")
-        proxy_list = default_proxy_platform.replace("，", ",").replace(" ", "").split(",")
-        if self.user_config.get("enable_proxy") and self.platform_key in proxy_list:
-            return self.app.proxy_manager.get_status_check_proxy()
 
     def _get_status_check_attempts(self) -> int:
         if not self.app.proxy_manager.is_subscription_active():
