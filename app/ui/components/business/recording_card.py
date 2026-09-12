@@ -235,9 +235,10 @@ class RecordingCardManager:
         status_label.bgcolor = status_config["bgcolor"]
 
     async def update_card(self, recording):
-        """Update only the recordings cards in the scrollable content area."""
+        """Update the recording card and status filter counts."""
         if recording.rec_id in self.cards_obj:
             try:
+                self.app.recordings.refresh_status_counts()
                 recording_card = self.cards_obj[recording.rec_id]
 
                 display_title = RecordingCardState.get_display_title(recording, self._)
@@ -394,6 +395,7 @@ class RecordingCardManager:
 
             try:
                 recordings_page.recording_card_area.update()
+                self.app.recordings.refresh_status_counts()
             except (ft.core.page.PageDisconnectedException, AssertionError) as e:
                 logger.debug(f"Update recording card area failed: {e}")
 

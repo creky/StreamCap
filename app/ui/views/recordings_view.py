@@ -27,6 +27,7 @@ class RecordingsPage(PageBase):
         self.current_filter = "all"
         self.current_platform_filter = "all"
         self.platform_buttons = {}
+        self.status_filter_buttons = {}
         self.init()
 
     def load_language(self):
@@ -253,6 +254,12 @@ class RecordingsPage(PageBase):
             ),
         ]
         
+        self.status_filter_buttons = dict(zip(
+            ("recording", "living", "offline", "error", "stopped"),
+            filter_buttons[2:],
+        ))
+        self.refresh_status_counts(update=False)
+
         platforms = {}
         for recording in self.app.record_manager.recordings:
             if recording.platform and recording.platform_key:
@@ -332,6 +339,21 @@ class RecordingsPage(PageBase):
 
     def _is_active_page(self) -> bool:
         return self.app.current_page == self
+
+    def refresh_status_counts(self, update=True) -> None:
+        if update and not self._is_active_page():
+            return
+
+        for status, button in self.status_filter_buttons.items():
+            count = sum(
+                RecordingFilters.get_status_filter_result(recording, status)
+                for recording in self.app.record_manager.recordings
+            )
+            text = f"{self._['filter_' + status]}（{count}）"
+            if button.text != text:
+                button.text = text
+                if update:
+                    button.update()
 
     def _refresh_filter_area(self) -> None:
         if not self._is_active_page():
