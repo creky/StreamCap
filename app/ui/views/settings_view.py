@@ -1,8 +1,11 @@
 import asyncio
-import os
+import sys
+from datetime import datetime, timedelta
 
 import flet as ft
 
+from ...core.runtime.paths import default_recordings_dir
+from ...core.runtime.scheduled_shutdown import MAX_QUICK_SHUTDOWN_HOURS
 from ...models.media.audio_format_model import AudioFormat
 from ...models.media.video_format_model import VideoFormat
 from ...models.media.video_quality_model import VideoQuality
@@ -10,6 +13,7 @@ from ...utils.delay import DelayedTaskExecutor
 from ...utils.logger import logger
 from ..base_page import PageBase
 from ..components.dialogs.help_dialog import HelpDialog
+from ..themes import PopupColorItem
 
 
 class SettingsPage(PageBase):
@@ -39,9 +43,9 @@ class SettingsPage(PageBase):
         self.page.on_keyboard_event = self.on_keyboard
 
     async def load(self):
-        self.content_area.clean()
+        self.content_area.controls.clear()
         language = self.app.language_manager.language
-        self._ = language["settings_page"] | language["video_quality"] | language["base"]
+        self._ = language["settings_page"] | language["video_quality"] | language["base"] | language["sidebar"]
         login_page_language = language.get("login_page", {})
         self._["username"] = self._.get("username") or login_page_language.get("username", "Username")
         self._["password"] = self._.get("password") or login_page_language.get("password", "Password")
@@ -51,21 +55,35 @@ class SettingsPage(PageBase):
         self.tab_accounts = self.create_accounts_settings_tab()
         self.page.on_keyboard_event = self.on_keyboard
 
-        tabs = [
-            ft.Tab(text=self._["recording_settings"], content=self.tab_recording),
-            ft.Tab(text=self._["push_settings"], content=self.tab_push),
-            ft.Tab(text=self._["cookies_settings"], content=self.tab_cookies),
-            ft.Tab(text=self._["accounts_settings"], content=self.tab_accounts),
+        tab_labels = [
+            ft.Tab(label=self._["recording_settings"]),
+            ft.Tab(label=self._["push_settings"]),
+            ft.Tab(label=self._["cookies_settings"]),
+            ft.Tab(label=self._["accounts_settings"]),
         ]
-        
+        tab_contents = [
+            self.tab_recording,
+            self.tab_push,
+            self.tab_cookies,
+            self.tab_accounts,
+        ]
+
         if self.app.page.web:
             self.tab_security = self.create_security_settings_tab()
-            tabs.append(ft.Tab(text=self._["security_settings"], content=self.tab_security))
+            tab_labels.append(ft.Tab(label=self._["security_settings"]))
+            tab_contents.append(self.tab_security)
 
         settings_tabs = ft.Tabs(
+            content=ft.Column(
+                [
+                    ft.TabBar(tabs=tab_labels),
+                    ft.TabBarView(controls=tab_contents, expand=True),
+                ],
+                expand=True,
+            ),
+            length=len(tab_labels),
             selected_index=0,
             animation_duration=300,
-            tabs=tabs,
             expand=True,
         )
 
@@ -99,11 +117,7 @@ class SettingsPage(PageBase):
         self.app.complete_page.update()
 
     def init_unsaved_changes(self):
-        self.has_unsaved_changes = {
-            "user_config": False,
-            "cookies_config": False,
-            "accounts_config": False
-        }
+        self.has_unsaved_changes = {"user_config": False, "cookies_config": False, "accounts_config": False}
 
     def load_language(self):
         if not self.language_option:
@@ -131,12 +145,14 @@ class SettingsPage(PageBase):
             ui_language = self.user_config["language"]
             self.user_config = self.default_config.copy()
             self.user_config["language"] = ui_language
+            self.app.services.settings_config.adopt_user_config(self.user_config)
             self.app.language_manager.notify_observers()
             self.page.run_task(self.load)
             await self.config_manager.save_user_config(self.user_config)
             await self.app.proxy_manager.sync_from_settings()
+            await self.app.shutdown_manager.reschedule()
             logger.success("Default configuration restored.")
-            await self.app.snack_bar.show_snack_bar(self._["success_restore_tip"], bgcolor=ft.Colors.GREEN)
+            await self.app.snack_bar.show_snack_bar(self._["success_restore_tip"], bgcolor=ft.Colors.PRIMARY)
             await close_dialog(None)
 
         async def close_dialog(_):
@@ -147,8 +163,8 @@ class SettingsPage(PageBase):
             title=ft.Text(self._["confirm"]),
             content=ft.Text(self._["query_restore_config_tip"]),
             actions=[
-                ft.TextButton(text=self._["cancel"], on_click=close_dialog),
-                ft.TextButton(text=self._["sure"], on_click=confirm_dlg),
+                ft.TextButton(content=self._["cancel"], on_click=close_dialog),
+                ft.TextButton(content=self._["sure"], on_click=confirm_dlg),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
             modal=False,
@@ -162,15 +178,17 @@ class SettingsPage(PageBase):
         """Handle changes in any input field and trigger auto-save."""
         key = e.control.data
         if isinstance(e.control, (ft.Switch, ft.Checkbox)):
-            self.user_config[key] = e.data.lower() == "true"
+            value = e.data
+            self.user_config[key] = value if isinstance(value, bool) else str(value).lower() == "true"
         else:
+            # For other controls, e.data is string
             self.user_config[key] = e.data
-            
+
         if key in ["folder_name_platform", "folder_name_author", "folder_name_time", "folder_name_title"]:
             for recording in self.app.record_manager.recordings:
                 recording.recording_dir = None
-            self.page.run_task(self.app.record_manager.persist_recordings)
-            
+            self.app.services.run_coro(self.app.record_manager.persist_recordings())
+
         if key == "language":
             self.load_language()
             self.app.language_manager.load()
@@ -179,16 +197,18 @@ class SettingsPage(PageBase):
 
         if key == "loop_time_seconds":
             self.app.record_manager.initialize_dynamic_state()
+        if key in {"scheduled_shutdown_enabled", "scheduled_shutdown_time"}:
+            await self.app.shutdown_manager.reschedule()
         save_delay = 0 if key == "enable_proxy" else None
         self.page.run_task(self.delay_handler.start_task_timer, self.save_user_config_after_delay, save_delay)
-        self.has_unsaved_changes['user_config'] = True
+        self.has_unsaved_changes["user_config"] = True
 
     def on_cookies_change(self, e):
         """Handle changes in any input field and trigger auto-save."""
         key = e.control.data
         self.cookies_config[key] = e.data
         self.page.run_task(self.delay_handler.start_task_timer, self.save_cookies_after_delay, None)
-        self.has_unsaved_changes['cookies_config'] = True
+        self.has_unsaved_changes["cookies_config"] = True
 
     def on_accounts_change(self, e):
         """Handle changes in any input field and trigger auto-save."""
@@ -199,28 +219,28 @@ class SettingsPage(PageBase):
 
         self.accounts_config[k1][k2] = e.data
         self.page.run_task(self.delay_handler.start_task_timer, self.save_accounts_after_delay, None)
-        self.has_unsaved_changes['accounts_config'] = True
+        self.has_unsaved_changes["accounts_config"] = True
 
     async def save_user_config_after_delay(self, delay):
         await asyncio.sleep(delay)
-        if self.has_unsaved_changes['user_config']:
+        if self.has_unsaved_changes["user_config"]:
             await self.config_manager.save_user_config(self.user_config)
             await self.app.proxy_manager.sync_from_settings()
 
     async def save_cookies_after_delay(self, delay):
         await asyncio.sleep(delay)
-        if self.has_unsaved_changes['cookies_config']:
+        if self.has_unsaved_changes["cookies_config"]:
             await self.config_manager.save_cookies_config(self.cookies_config)
 
     async def save_accounts_after_delay(self, delay):
         await asyncio.sleep(delay)
-        if self.has_unsaved_changes['accounts_config']:
+        if self.has_unsaved_changes["accounts_config"]:
             await self.config_manager.save_accounts_config(self.accounts_config)
 
     def get_video_save_path(self):
         live_save_path = self.get_config_value("live_save_path")
         if not live_save_path:
-            live_save_path = os.path.join(self.app.run_path, 'downloads')
+            live_save_path = str(default_recordings_dir)
         return live_save_path
 
     @staticmethod
@@ -230,7 +250,7 @@ class SettingsPage(PageBase):
     def create_recording_settings_tab(self):
         """Create UI elements for recording settings."""
         is_mobile = self.app.is_mobile
-        
+
         return ft.Column(
             [
                 self.create_setting_group(
@@ -241,6 +261,7 @@ class SettingsPage(PageBase):
                             self._["restore_defaults"],
                             ft.IconButton(
                                 icon=ft.Icons.RESTORE_OUTLINED,
+                                icon_color=ft.Colors.PRIMARY,
                                 icon_size=32,
                                 tooltip=self._["restore_defaults"],
                                 on_click=self.restore_default_config,
@@ -250,13 +271,41 @@ class SettingsPage(PageBase):
                             self._["program_language"],
                             ft.Dropdown(
                                 options=[
-                                    ft.dropdown.Option(key=k, text=self._[k]) for k, v in self.language_option.items()
+                                    ft.dropdown.DropdownOption(key=k, text=self._[k])
+                                    for k, v in self.language_option.items()
                                 ],
                                 value=self.get_config_value("language", self.default_language),
                                 width=200,
-                                on_change=self.on_change,
+                                on_select=self.on_change,
                                 data="language",
                                 tooltip=self._["switch_language"],
+                            ),
+                        ),
+                        self.create_setting_row(
+                            self._["theme_color"],
+                            ft.PopupMenuButton(
+                                icon=ft.Icons.COLOR_LENS_OUTLINED,
+                                icon_color=ft.Colors.PRIMARY,
+                                tooltip=self._["colors"],
+                                items=[
+                                    PopupColorItem(color=color, name=name)
+                                    for color, name in [
+                                        ("deeppurple", "Deep purple"),
+                                        ("purple", "Purple"),
+                                        ("indigo", "Indigo"),
+                                        ("blue", "Blue"),
+                                        ("teal", "Teal"),
+                                        ("deeporange", "Deep orange"),
+                                        ("orange", "Orange"),
+                                        ("pink", "Pink"),
+                                        ("brown", "Brown"),
+                                        ("bluegrey", "Blue Grey"),
+                                        ("green", "Green"),
+                                        ("cyan", "Cyan"),
+                                        ("lightblue", "Light Blue"),
+                                        ("", "Default"),
+                                    ]
+                                ],
                             ),
                         ),
                         self.create_setting_row(
@@ -302,6 +351,11 @@ class SettingsPage(PageBase):
                                 on_change=self.on_change,
                                 data="remember_window_size",
                             ),
+                        ),
+                        *(
+                            [self.create_scheduled_shutdown_setting_row()]
+                            if sys.platform == "win32" and not self.app.page.web
+                            else []
                         ),
                     ],
                     is_mobile,
@@ -356,22 +410,24 @@ class SettingsPage(PageBase):
                         self.create_setting_row(
                             self._["video_record_format"],
                             ft.Dropdown(
-                                options=[ft.dropdown.Option(i) for i in self.get_supported_record_format()],
+                                options=[ft.dropdown.DropdownOption(i) for i in self.get_supported_record_format()],
                                 value=self.get_config_value("video_format", VideoFormat.TS),
                                 width=200,
                                 data="video_format",
-                                on_change=self.on_change,
+                                on_select=self.on_change,
                                 tooltip=self._["switch_video_format"],
                             ),
                         ),
                         self.create_setting_row(
                             self._["recording_quality"],
                             ft.Dropdown(
-                                options=[ft.dropdown.Option(i, text=self._[i]) for i in VideoQuality.get_qualities()],
+                                options=[
+                                    ft.dropdown.DropdownOption(i, text=self._[i]) for i in VideoQuality.get_qualities()
+                                ],
                                 value=self.get_config_value("record_quality", VideoQuality.OD),
                                 width=200,
                                 data="record_quality",
-                                on_change=self.on_change,
+                                on_select=self.on_change,
                                 tooltip=self._["switch_recording_quality"],
                             ),
                         ),
@@ -403,11 +459,11 @@ class SettingsPage(PageBase):
                         self.create_setting_row(
                             self._["default_live_source"],
                             ft.Dropdown(
-                                options=[ft.dropdown.Option(i) for i in ['HLS', 'FLV']],
-                                value=self.get_config_value("default_live_source", 'FLV'),
+                                options=[ft.dropdown.DropdownOption(i) for i in ["HLS", "FLV"]],
+                                value=self.get_config_value("default_live_source", "FLV"),
                                 width=200,
                                 data="default_live_source",
-                                on_change=self.on_change,
+                                on_select=self.on_change,
                                 tooltip=self._["default_live_source_tip"],
                             ),
                         ),
@@ -495,7 +551,7 @@ class SettingsPage(PageBase):
                                 width=100,
                                 data="platform_max_concurrent_requests",
                                 on_change=self.on_change,
-                                hint_text=self._["platform_max_concurrent_requests_tip"]
+                                hint_text=self._["platform_max_concurrent_requests_tip"],
                             ),
                         ),
                         self.create_setting_row(
@@ -504,7 +560,7 @@ class SettingsPage(PageBase):
                                 value=self.get_config_value("check_live_on_browser_refresh", True),
                                 data="check_live_on_browser_refresh",
                                 on_change=self.on_change,
-                                tooltip=self._['check_live_on_browser_refresh_tip']
+                                tooltip=self._["check_live_on_browser_refresh_tip"],
                             ),
                         ),
                     ],
@@ -518,7 +574,7 @@ class SettingsPage(PageBase):
     def create_push_settings_tab(self):
         """Create UI elements for push configuration."""
         is_mobile = self.app.is_mobile
-        
+
         return ft.Column(
             [
                 self.create_setting_group(
@@ -782,10 +838,13 @@ class SettingsPage(PageBase):
                                 self.create_setting_row(
                                     self._["bark_interrupt_level"],
                                     ft.Dropdown(
-                                        options=[ft.dropdown.Option("active"), ft.dropdown.Option("passive")],
+                                        options=[
+                                            ft.dropdown.DropdownOption("active"),
+                                            ft.dropdown.DropdownOption("passive"),
+                                        ],
                                         value=self.get_config_value("bark_interrupt_level"),
                                         width=200,
-                                        on_change=self.on_change,
+                                        on_select=self.on_change,
                                         data="bark_interrupt_level",
                                     ),
                                 ),
@@ -874,30 +933,14 @@ class SettingsPage(PageBase):
 
     def create_push_channels_layout(self):
         controls = [
-            self.create_channel_switch_container(
-                self._["dingtalk"], ft.Icons.BUSINESS_CENTER, "dingtalk_enabled"
-            ),
-            self.create_channel_switch_container(
-                self._["wechat"], ft.Icons.WECHAT, "wechat_enabled"
-            ),
-            self.create_channel_switch_container(
-                self._["feishu"], ft.Icons.BOOK, "feishu_enabled"
-            ),
-            self.create_channel_switch_container(
-                self._["serverchan"], ft.Icons.CLOUD_OUTLINED, "serverchan_enabled"
-            ),
-            self.create_channel_switch_container(
-                self._["email"], ft.Icons.EMAIL, "email_enabled"
-            ),
-            self.create_channel_switch_container(
-                "Bark", ft.Icons.NOTIFICATIONS_ACTIVE, "bark_enabled"
-            ),
-            self.create_channel_switch_container(
-                "Ntfy", ft.Icons.NOTIFICATIONS, "ntfy_enabled"
-            ),
-            self.create_channel_switch_container(
-                self._["telegram"], ft.Icons.SMS, "telegram_enabled"
-            ),
+            self.create_channel_switch_container(self._["dingtalk"], ft.Icons.BUSINESS_CENTER, "dingtalk_enabled"),
+            self.create_channel_switch_container(self._["wechat"], ft.Icons.WECHAT, "wechat_enabled"),
+            self.create_channel_switch_container(self._["feishu"], ft.Icons.BOOK, "feishu_enabled"),
+            self.create_channel_switch_container(self._["serverchan"], ft.Icons.CLOUD_OUTLINED, "serverchan_enabled"),
+            self.create_channel_switch_container(self._["email"], ft.Icons.EMAIL, "email_enabled"),
+            self.create_channel_switch_container("Bark", ft.Icons.NOTIFICATIONS_ACTIVE, "bark_enabled"),
+            self.create_channel_switch_container("Ntfy", ft.Icons.NOTIFICATIONS, "ntfy_enabled"),
+            self.create_channel_switch_container(self._["telegram"], ft.Icons.SMS, "telegram_enabled"),
         ]
 
         if self.app.is_mobile:
@@ -928,7 +971,7 @@ class SettingsPage(PageBase):
     def create_cookies_settings_tab(self):
         """Create UI elements for push configuration."""
         is_mobile = self.app.is_mobile
-        
+
         platforms = [
             "douyin",
             "tiktok",
@@ -998,7 +1041,7 @@ class SettingsPage(PageBase):
     def create_accounts_settings_tab(self):
         """Create UI elements for platform accounts configuration."""
         is_mobile = self.app.is_mobile
-        
+
         return ft.Column(
             [
                 self.create_setting_group(
@@ -1062,11 +1105,11 @@ class SettingsPage(PageBase):
                         self.create_setting_row(
                             self._["twitcasting_account_type"],
                             ft.Dropdown(
-                                options=[ft.dropdown.Option("Default"), ft.dropdown.Option("Twitter")],
+                                options=[ft.dropdown.DropdownOption("Default"), ft.dropdown.DropdownOption("Twitter")],
                                 value=self.get_accounts_value("twitcasting_account_type", "Default"),
                                 width=500,
                                 data="twitcasting_account_type",
-                                on_change=self.on_accounts_change,
+                                on_select=self.on_accounts_change,
                                 tooltip=self._["switch_account_type"],
                             ),
                         ),
@@ -1123,7 +1166,7 @@ class SettingsPage(PageBase):
                 data="folder_name_title",
             ),
         ]
-        
+
         if self.app.is_mobile:
             checkbox_grid = ft.Column(
                 [
@@ -1132,14 +1175,14 @@ class SettingsPage(PageBase):
                 ],
                 spacing=5,
             )
-            
+
             return ft.Column(
                 [
                     ft.Text(label, text_align=ft.TextAlign.LEFT, weight=ft.FontWeight.BOLD),
                     ft.Container(
                         content=checkbox_grid,
-                        margin=ft.margin.only(top=5, bottom=10),
-                    )
+                        margin=ft.Margin.only(top=5, bottom=10),
+                    ),
                 ],
                 spacing=5,
                 alignment=ft.MainAxisAlignment.START,
@@ -1152,6 +1195,246 @@ class SettingsPage(PageBase):
                 alignment=ft.MainAxisAlignment.START,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             )
+
+    def create_scheduled_shutdown_setting_row(self):
+        enabled = bool(self.get_config_value("scheduled_shutdown_enabled", False))
+        shutdown_time = str(self.get_config_value("scheduled_shutdown_time", "23:00"))
+        selected_hours = str(self.get_config_value("quick_shutdown_hours", "3"))
+        active_target = self.app.shutdown_manager.quick_shutdown_at
+
+        time_field = ft.TextField(
+            value=shutdown_time,
+            width=110,
+            read_only=True,
+            disabled=not enabled,
+            text_align=ft.TextAlign.CENTER,
+            tooltip=self._["scheduled_shutdown_time"],
+        )
+
+        async def pick_shutdown_time(_event):
+            async def handle_change(event):
+                picked = event.control.value
+                if picked is None:
+                    return
+                value = picked.strftime("%H:%M")
+                time_field.value = value
+                time_field.update()
+
+                class _TimeChangeEvent:
+                    def __init__(self):
+                        self.control = time_field
+                        self.control.data = "scheduled_shutdown_time"
+                        self.data = value
+
+                await self.on_change(_TimeChangeEvent())
+
+            time_picker = ft.TimePicker(
+                confirm_text=self._["confirm"],
+                cancel_text=self._["cancel"],
+                help_text=self._["scheduled_shutdown_pick_time"],
+                on_change=handle_change,
+            )
+            self.page.show_dialog(time_picker)
+
+        time_button = ft.IconButton(
+            icon=ft.Icons.SCHEDULE,
+            tooltip=self._["scheduled_shutdown_pick_time"],
+            disabled=not enabled,
+            on_click=pick_shutdown_time,
+        )
+
+        async def toggle_shutdown(event):
+            is_enabled = bool(event.control.value)
+            time_field.disabled = not is_enabled
+            time_button.disabled = not is_enabled
+            time_field.update()
+            time_button.update()
+            await self.on_change(event)
+
+        shutdown_switch = ft.Switch(
+            value=enabled,
+            data="scheduled_shutdown_enabled",
+            tooltip=self._["scheduled_shutdown_tip"],
+            on_change=toggle_shutdown,
+        )
+
+        status_text = ft.Text(
+            (
+                self._["quick_shutdown_active"].format(time=active_target.strftime("%m-%d %H:%M"))
+                if active_target is not None
+                else self._["quick_shutdown_ready"].format(max_hours=MAX_QUICK_SHUTDOWN_HOURS)
+            ),
+            size=12,
+            color=ft.Colors.PRIMARY if active_target is not None else ft.Colors.GREY_600,
+        )
+
+        hours_field = ft.TextField(
+            value=selected_hours,
+            width=80,
+            hint_text=f"1-{MAX_QUICK_SHUTDOWN_HOURS}",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9]*"),
+            data="quick_shutdown_hours",
+            on_change=self.on_change,
+            disabled=active_target is not None,
+        )
+
+        async def update_active_state(target):
+            is_active = target is not None
+            hours_field.disabled = is_active
+            hours_field.error_text = None
+            start_button.disabled = is_active
+            cancel_button.disabled = not is_active
+            status_text.value = (
+                self._["quick_shutdown_active"].format(time=target.strftime("%m-%d %H:%M"))
+                if is_active
+                else self._["quick_shutdown_ready"].format(max_hours=MAX_QUICK_SHUTDOWN_HOURS)
+            )
+            status_text.color = ft.Colors.PRIMARY if is_active else ft.Colors.GREY_600
+            hours_field.update()
+            start_button.update()
+            cancel_button.update()
+            status_text.update()
+
+        async def start_quick_shutdown(_event):
+            try:
+                hours = int((hours_field.value or "").strip())
+            except ValueError:
+                hours = 0
+            if not 1 <= hours <= MAX_QUICK_SHUTDOWN_HOURS:
+                hours_field.error_text = self._["quick_shutdown_invalid_hours"].format(
+                    max_hours=MAX_QUICK_SHUTDOWN_HOURS
+                )
+                hours_field.update()
+                return
+
+            hours_field.error_text = None
+            hours_field.update()
+            expected_time = datetime.now() + timedelta(hours=hours)
+
+            async def close_dialog(_):
+                confirm_dialog.open = False
+                self.app.dialog_area.update()
+
+            async def confirm_start(_):
+                await close_dialog(None)
+                try:
+                    target = await self.app.shutdown_manager.start_quick_shutdown(hours)
+                except RuntimeError as exc:
+                    await self.app.snack_bar.show_snack_bar(
+                        self._["quick_shutdown_failed"].format(error=exc),
+                        bgcolor=ft.Colors.RED,
+                        duration=5000,
+                    )
+                    return
+
+                await update_active_state(target)
+                await self.app.snack_bar.show_snack_bar(
+                    self._["quick_shutdown_started"].format(time=target.strftime("%m-%d %H:%M")),
+                    bgcolor=ft.Colors.PRIMARY,
+                )
+
+            confirm_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text(self._["quick_shutdown_confirm_title"], weight=ft.FontWeight.BOLD),
+                content=ft.Text(
+                    self._["quick_shutdown_confirm_content"].format(
+                        hours=hours,
+                        time=expected_time.strftime("%m-%d %H:%M"),
+                    )
+                ),
+                actions=[
+                    ft.TextButton(content=self._["cancel"], on_click=close_dialog),
+                    ft.Button(
+                        content=self._["quick_shutdown_start"],
+                        icon=ft.Icons.POWER_SETTINGS_NEW,
+                        on_click=confirm_start,
+                    ),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            confirm_dialog.open = True
+            self.app.dialog_area.content = confirm_dialog
+            self.app.dialog_area.update()
+
+        async def cancel_quick_shutdown(_event):
+            try:
+                await self.app.shutdown_manager.cancel_quick_shutdown()
+            except RuntimeError as exc:
+                await self.app.snack_bar.show_snack_bar(
+                    self._["quick_shutdown_cancel_failed"].format(error=exc),
+                    bgcolor=ft.Colors.RED,
+                    duration=5000,
+                )
+                return
+
+            await update_active_state(None)
+            await self.app.snack_bar.show_snack_bar(
+                self._["quick_shutdown_cancelled"],
+                bgcolor=ft.Colors.PRIMARY,
+            )
+
+        start_button = ft.Button(
+            content=self._["quick_shutdown_start"],
+            icon=ft.Icons.POWER_SETTINGS_NEW,
+            tooltip=self._["quick_shutdown_start_tip"],
+            disabled=active_target is not None,
+            on_click=start_quick_shutdown,
+        )
+        cancel_button = ft.IconButton(
+            icon=ft.Icons.CANCEL_SCHEDULE_SEND,
+            tooltip=self._["quick_shutdown_cancel"],
+            disabled=active_target is None,
+            on_click=cancel_quick_shutdown,
+        )
+
+        quick_shutdown_controls = ft.Column(
+            [
+                ft.Text(self._["quick_shutdown"], weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [
+                        hours_field,
+                        ft.Text(self._["quick_shutdown_hours_suffix"]),
+                        start_button,
+                        cancel_button,
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                status_text,
+            ],
+            spacing=6,
+            tight=True,
+        )
+
+        async def close_shutdown_settings(_event):
+            shutdown_settings_dialog.open = False
+            self.app.dialog_area.update()
+
+        shutdown_settings_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(self._["scheduled_shutdown"], weight=ft.FontWeight.BOLD),
+            content=ft.Container(content=quick_shutdown_controls, width=420),
+            actions=[ft.TextButton(content=self._["close"], on_click=close_shutdown_settings)],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        async def open_shutdown_settings(_event):
+            shutdown_settings_dialog.open = True
+            self.app.dialog_area.content = shutdown_settings_dialog
+            self.app.dialog_area.update()
+
+        details_button = ft.IconButton(
+            icon=ft.Icons.CHEVRON_RIGHT,
+            tooltip=self._["scheduled_shutdown_more"],
+            on_click=open_shutdown_settings,
+        )
+        controls = ft.Row(
+            [shutdown_switch, time_field, time_button, details_button],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        return self.create_setting_row(self._["scheduled_shutdown"], controls)
 
     def create_channel_switch_container(self, channel_name, icon, key):
         """Helper method to create a container with a switch and an icon for each channel."""
@@ -1173,7 +1456,7 @@ class SettingsPage(PageBase):
     def create_channel_config(channel_name, settings):
         """Helper method to create expandable configurations for each channel."""
         return ft.ExpansionTile(
-            initially_expanded=False,
+            expanded=False,
             title=ft.Text(channel_name, size=14, weight=ft.FontWeight.BOLD),
             controls=[ft.Container(content=ft.Column(settings, spacing=5), padding=10)],
             tile_padding=0,
@@ -1184,7 +1467,7 @@ class SettingsPage(PageBase):
         """Helper method to group settings under a title."""
         padding = 5 if is_mobile else 10
         margin = 5 if is_mobile else 10
-        
+
         card = ft.Card(
             content=ft.Container(
                 content=ft.Column(
@@ -1200,7 +1483,7 @@ class SettingsPage(PageBase):
             elevation=5,
             margin=margin,
         )
-        
+
         if is_mobile:
             return ft.Container(
                 content=card,
@@ -1216,38 +1499,34 @@ class SettingsPage(PageBase):
 
     def create_setting_row(self, label, control):
         """Helper method to create a row for each setting."""
-        if hasattr(control, 'on_focus'):
+        if hasattr(control, "on_focus"):
             control.on_focus = lambda e: self.set_focused_control(e.control)
-            
+
         if self.app.is_mobile:
             if isinstance(control, (ft.Switch, ft.Checkbox, ft.IconButton)):
                 return ft.Row(
-                    [
-                        ft.Text(label),
-                        ft.Container(expand=True),
-                        control
-                    ],
+                    [ft.Text(label), ft.Container(expand=True), control],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     width=float("inf"),
                 )
-            
-            if hasattr(control, 'width') and control.width and control.width > 250:
+
+            if hasattr(control, "width") and control.width and control.width > 250:
                 control.width = 250
-                
+
             if isinstance(control, (ft.TextField, ft.Dropdown)):
                 control.width = float("inf")
                 control.expand = True
-                
+
             return ft.Column(
                 [
                     ft.Text(label, text_align=ft.TextAlign.LEFT),
                     ft.Container(
                         content=control,
-                        margin=ft.margin.only(top=5, bottom=10),
+                        margin=ft.Margin.only(top=5, bottom=10),
                         expand=True,
                         width=float("inf"),
-                    )
+                    ),
                 ],
                 spacing=0,
                 alignment=ft.MainAxisAlignment.START,
@@ -1262,33 +1541,45 @@ class SettingsPage(PageBase):
             )
 
     def pick_folder(self, label, control):
-        def picked_folder(e: ft.FilePickerResultEvent):
-            path = e.path
+        async def pick_folder_click(_):
+            if self.app.page.web:
+                await self.app.snack_bar.show_snack_bar(self._["unsupported_select_path"])
+                return
+            folder_picker = ft.FilePicker()
+            try:
+                path = await folder_picker.get_directory_path()
+            except RuntimeError as exc:
+                logger.error(f"Failed to open folder picker: {exc}")
+                await self.app.snack_bar.show_snack_bar(
+                    self._["select_path_failed"],
+                    bgcolor=ft.Colors.RED,
+                    duration=3000,
+                )
+                return
             if path:
                 control.value = path
                 control.update()
-                e.control.data = control.data
-                e.data = path
-                self.page.run_task(self.on_change, e)
 
-        async def pick_folder(_):
-            if self.app.page.web:
-                await self.app.snack_bar.show_snack_bar(self._["unsupported_select_path"])
-            folder_picker.get_directory_path()
+                class _FakeEvent:
+                    def __init__(self):
+                        self.control = control
+                        self.data = path
 
-        folder_picker = ft.FilePicker(on_result=picked_folder)
-        self.page.overlay.append(folder_picker)
-        self.page.update()
+                fake_e = _FakeEvent()
+                await self.on_change(fake_e)
 
-        btn_pick_folder = ft.ElevatedButton(
-            text=self._["select"], icon=ft.Icons.FOLDER_OPEN, on_click=pick_folder, tooltip=self._["select_btn_tip"]
+        btn_pick_folder = ft.Button(
+            content=self._["select"],
+            icon=ft.Icons.FOLDER_OPEN,
+            on_click=pick_folder_click,
+            tooltip=self._["select_btn_tip"],
         )
-        
+
         if self.app.is_mobile:
-            if hasattr(control, 'width'):
+            if hasattr(control, "width"):
                 control.width = float("inf")
                 control.expand = True
-                
+
             return ft.Column(
                 [
                     ft.Text(label, text_align=ft.TextAlign.LEFT),
@@ -1298,7 +1589,7 @@ class SettingsPage(PageBase):
                                 content=control,
                                 expand=True,
                             ),
-                            btn_pick_folder
+                            btn_pick_folder,
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -1326,7 +1617,7 @@ class SettingsPage(PageBase):
         save_methods = {
             "user_config": (self.config_manager.save_user_config, self.user_config),
             "cookies_config": (self.config_manager.save_cookies_config, self.cookies_config),
-            "accounts_config": (self.config_manager.save_accounts_config, self.accounts_config)
+            "accounts_config": (self.config_manager.save_accounts_config, self.accounts_config),
         }
 
         for config_key, should_save in self.has_unsaved_changes.items():
@@ -1338,7 +1629,7 @@ class SettingsPage(PageBase):
 
         if show_snack_bar:
             await self.app.snack_bar.show_snack_bar(
-                self._["success_save_config_tip"], duration=1500, bgcolor=ft.Colors.GREEN
+                self._["success_save_config_tip"], duration=1500, bgcolor=ft.Colors.PRIMARY
             )
 
     async def on_keyboard(self, e: ft.KeyboardEvent):
@@ -1352,28 +1643,28 @@ class SettingsPage(PageBase):
 
     def create_security_settings_tab(self):
         is_mobile = self.app.is_mobile
-        
+
         async def change_password(_):
             old_password = old_password_field.value
             new_password = new_password_field.value
             confirm_password = confirm_password_field.value
-            
+
             if not old_password:
                 await self.app.snack_bar.show_snack_bar(self._["old_password_required"], bgcolor=ft.Colors.RED)
                 return
-                
+
             if not new_password:
                 await self.app.snack_bar.show_snack_bar(self._["new_password_required"], bgcolor=ft.Colors.RED)
                 return
-                
+
             if new_password != confirm_password:
                 await self.app.snack_bar.show_snack_bar(self._["passwords_not_match"], bgcolor=ft.Colors.RED)
                 return
-                
+
             _username = self.app.current_username
             if _username:
                 success = await self.app.auth_manager.change_password(_username, old_password, new_password)
-                
+
                 if success:
                     old_password_field.value = ""
                     new_password_field.value = ""
@@ -1381,54 +1672,54 @@ class SettingsPage(PageBase):
                     old_password_field.update()
                     new_password_field.update()
                     confirm_password_field.update()
-                    
-                    await self.app.snack_bar.show_snack_bar(self._["password_changed"], bgcolor=ft.Colors.GREEN)
+
+                    await self.app.snack_bar.show_snack_bar(self._["password_changed"], bgcolor=ft.Colors.PRIMARY)
                 else:
                     await self.app.snack_bar.show_snack_bar(self._["old_password_incorrect"], bgcolor=ft.Colors.RED)
             else:
                 await self.app.snack_bar.show_snack_bar(self._["not_logged_in"], bgcolor=ft.Colors.RED)
-        
+
         async def toggle_login_required(_):
             login_required = login_required_switch.value
             self.user_config["login_required"] = login_required
             await self.config_manager.save_user_config(self.user_config)
-            
+
             if login_required:
-                await self.app.snack_bar.show_snack_bar(self._["login_required_enabled"], bgcolor=ft.Colors.GREEN)
+                await self.app.snack_bar.show_snack_bar(self._["login_required_enabled"], bgcolor=ft.Colors.PRIMARY)
             else:
-                await self.app.snack_bar.show_snack_bar(self._["login_required_disabled"], bgcolor=ft.Colors.GREEN)
-        
+                await self.app.snack_bar.show_snack_bar(self._["login_required_disabled"], bgcolor=ft.Colors.PRIMARY)
+
         username = self.app.current_username or "admin"
-        
+
         old_password_field = ft.TextField(
             password=True,
             width=300,
-            label=self._["old_password"],
+            label=self._["old_password"] + " | " + self._["default_old_password"],
         )
-        
+
         new_password_field = ft.TextField(
             password=True,
             width=300,
             label=self._["new_password"],
         )
-        
+
         confirm_password_field = ft.TextField(
             password=True,
             width=300,
             label=self._["confirm_password"],
         )
-        
-        change_password_button = ft.ElevatedButton(
-            text=self._["change_password"],
+
+        change_password_button = ft.Button(
+            content=self._["change_password"],
             on_click=change_password,
-            icon=ft.icons.LOCK_RESET,
+            icon=ft.Icons.LOCK_RESET,
         )
-        
+
         login_required_switch = ft.Switch(
             value=self.get_config_value("login_required", False),
             on_change=toggle_login_required,
         )
-        
+
         return ft.Column(
             [
                 self.create_setting_group(

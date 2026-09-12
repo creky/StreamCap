@@ -4,9 +4,10 @@ from ..base import FFmpegCommandBuilder
 class TSCommandBuilder(FFmpegCommandBuilder):
     def build_command(self) -> list[str]:
         command = self._get_basic_ffmpeg_command()
+        # fmt: off
         if self.segment_record:
             additional_commands = [
-                "-c:v", "copy",
+                *self._get_video_codec_options(),
                 "-c:a", "copy",
                 "-map", "0",
                 "-f", "segment",
@@ -20,7 +21,7 @@ class TSCommandBuilder(FFmpegCommandBuilder):
             ]
         else:
             additional_commands = [
-                "-c:v", "copy",
+                *self._get_video_codec_options(),
                 "-c:a", "copy",
                 "-map", "0",
                 "-f", "mpegts",
@@ -29,6 +30,6 @@ class TSCommandBuilder(FFmpegCommandBuilder):
                 "-muxpreload", "0",
                 self.full_path,
             ]
-
+        # fmt: on
         command.extend(additional_commands)
         return command

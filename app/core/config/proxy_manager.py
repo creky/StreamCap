@@ -13,8 +13,8 @@ class ProxyManager:
     SUBSCRIPTION_REFRESH_SECONDS = 300
     SUBSCRIPTION_TIMEOUT_SECONDS = 15.0
 
-    def __init__(self, app):
-        self.app = app
+    def __init__(self, services):
+        self.services = services
         self.current_proxy_address = None
         self.current_proxy_username = ""
         self.current_proxy_password = ""
@@ -64,7 +64,7 @@ class ProxyManager:
                 str(payload.get("pwd") or "").strip(),
             )
 
-        ip_match = re.search(r'"ip"\s*:\s*\[(.*?)\]', payload_text, re.S)
+        ip_match = re.search(r'"ip"\s*:\s*\[(.*?)\]', payload_text, re.DOTALL)
         user_match = re.search(r'"user"\s*:\s*"([^"]*)"', payload_text)
         pwd_match = re.search(r'"pwd"\s*:\s*"([^"]*)"', payload_text)
 
@@ -182,7 +182,7 @@ class ProxyManager:
         self._set_current_proxy(None)
 
     def get_proxy(self) -> str | None:
-        if not self.app.settings.user_config.get("enable_proxy"):
+        if not self.services.settings_config.user_config.get("enable_proxy"):
             return None
         return self._build_proxy_value(
             self.current_proxy_address,
@@ -191,14 +191,14 @@ class ProxyManager:
         )
 
     def is_subscription_active(self) -> bool:
-        if not self.app.settings.user_config.get("enable_proxy"):
+        if not self.services.settings_config.user_config.get("enable_proxy"):
             return False
 
-        proxy_address = str(self.app.settings.user_config.get("proxy_address") or "").strip()
+        proxy_address = str(self.services.settings_config.user_config.get("proxy_address") or "").strip()
         return self.is_subscription_url(proxy_address) and bool(self.subscription_proxy_addresses)
 
     def get_status_check_proxy(self) -> str | None:
-        if not self.app.settings.user_config.get("enable_proxy"):
+        if not self.services.settings_config.user_config.get("enable_proxy"):
             return None
 
         if not self.is_subscription_active():
@@ -209,7 +209,9 @@ class ProxyManager:
                 return self.get_proxy()
 
             selected_proxy = self.subscription_proxy_addresses[self._subscription_proxy_index]
-            self._subscription_proxy_index = (self._subscription_proxy_index + 1) % len(self.subscription_proxy_addresses)
+            self._subscription_proxy_index = (self._subscription_proxy_index + 1) % len(
+                self.subscription_proxy_addresses
+            )
 
         return self._build_subscription_proxy_value(
             selected_proxy,
@@ -218,11 +220,15 @@ class ProxyManager:
         )
 
     async def sync_from_settings(self) -> None:
+        backend_loop = self.services.backend_loop
+        if backend_loop is not None and backend_loop is not asyncio.get_running_loop():
+            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(self.sync_from_settings(), backend_loop))
+            return
         async with self._refresh_lock:
-            proxy_enabled = self.app.settings.user_config.get("enable_proxy")
-            proxy_address = str(self.app.settings.user_config.get("proxy_address") or "").strip()
-            proxy_username = str(self.app.settings.user_config.get("proxy_username") or "").strip()
-            proxy_password = str(self.app.settings.user_config.get("proxy_password") or "").strip()
+            proxy_enabled = self.services.settings_config.user_config.get("enable_proxy")
+            proxy_address = str(self.services.settings_config.user_config.get("proxy_address") or "").strip()
+            proxy_username = str(self.services.settings_config.user_config.get("proxy_username") or "").strip()
+            proxy_password = str(self.services.settings_config.user_config.get("proxy_password") or "").strip()
 
             if not proxy_enabled or not proxy_address:
                 self.clear()
@@ -272,10 +278,10 @@ class ProxyManager:
 
     async def refresh_subscription(self) -> None:
         async with self._refresh_lock:
-            proxy_enabled = self.app.settings.user_config.get("enable_proxy")
-            proxy_address = str(self.app.settings.user_config.get("proxy_address") or "").strip()
-            proxy_username = str(self.app.settings.user_config.get("proxy_username") or "").strip()
-            proxy_password = str(self.app.settings.user_config.get("proxy_password") or "").strip()
+            proxy_enabled = self.services.settings_config.user_config.get("enable_proxy")
+            proxy_address = str(self.services.settings_config.user_config.get("proxy_address") or "").strip()
+            proxy_username = str(self.services.settings_config.user_config.get("proxy_username") or "").strip()
+            proxy_password = str(self.services.settings_config.user_config.get("proxy_password") or "").strip()
 
             if not proxy_enabled or not self.is_subscription_url(proxy_address):
                 return
@@ -288,6 +294,10 @@ class ProxyManager:
             await self.refresh_subscription()
 
     async def start(self) -> None:
+        backend_loop = self.services.backend_loop
+        if backend_loop is not None and backend_loop is not asyncio.get_running_loop():
+            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(self.start(), backend_loop))
+            return
         await self.sync_from_settings()
         if self._subscription_task is None or self._subscription_task.done():
             self._subscription_task = asyncio.create_task(self._subscription_refresh_loop())

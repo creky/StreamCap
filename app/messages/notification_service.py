@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import re
 import smtplib
@@ -17,7 +18,6 @@ class NotificationService:
 
     async def _async_post(self, url: str, json_data: dict[str, Any], proxy: str | None = None) -> dict[str, Any]:
         try:
-
             async with httpx.AsyncClient(proxy=proxy) as client:
                 response = await client.post(url, json=json_data, headers=self.headers)
                 response.raise_for_status()
@@ -27,7 +27,7 @@ class NotificationService:
             return {"error": str(e)}
 
     async def send_to_dingtalk(
-            self, url: str, content: str, number: Optional[str] = None, is_atall: bool = False
+        self, url: str, content: str, number: Optional[str] = None, is_atall: bool = False
     ) -> dict[str, list[str]]:
         results = {"success": [], "error": []}
         api_list = [u.strip() for u in url.replace("，", ",").split(",") if u.strip()]
@@ -59,47 +59,55 @@ class NotificationService:
 
     @staticmethod
     async def send_to_email(
-            email_host: str,
-            login_email: str,
-            password: str,
-            sender_email: str,
-            sender_name: str,
-            to_email: str,
-            title: str,
-            content: str,
-            smtp_port: str | None = None,
-            open_ssl: bool = True,
+        email_host: str,
+        login_email: str,
+        password: str,
+        sender_email: str,
+        sender_name: str,
+        to_email: str,
+        title: str,
+        content: str,
+        smtp_port: str | None = None,
+        open_ssl: bool = True,
+        timeout: float = 15.0,
     ) -> dict[str, Any]:
-        receivers = to_email.replace("，", ",").split(",") if to_email.strip() else []
-        results = {"success": [], "error": []}
+        receivers = [address.strip() for address in (to_email or "").replace("，", ",").split(",") if address.strip()]
+        if not receivers:
+            return {"success": [], "error": []}
+
+        message = MIMEMultipart()
+        send_name = base64.b64encode((sender_name or "").encode("utf-8")).decode()
+        message["From"] = f"=?UTF-8?B?{send_name}?= <{sender_email}>"
+        message["To"] = ", ".join(receivers)
+        message["Subject"] = Header(title, "utf-8")
+        message.attach(MIMEText(content, "plain", "utf-8"))
+
+        def send_sync() -> dict[str, list[str]]:
+            port = int(smtp_port or (465 if open_ssl else 25))
+            smtp_class = smtplib.SMTP_SSL if open_ssl else smtplib.SMTP
+            with smtp_class(email_host, port, timeout=timeout) as smtp_obj:
+                smtp_obj.login(login_email, password)
+                refused = smtp_obj.sendmail(sender_email, receivers, message.as_string())
+
+            refused_recipients = set(refused)
+            return {
+                "success": [receiver for receiver in receivers if receiver not in refused_recipients],
+                "error": [receiver for receiver in receivers if receiver in refused_recipients],
+            }
+
         try:
-            message = MIMEMultipart()
-            send_name = base64.b64encode(sender_name.encode("utf-8")).decode()
-            message["From"] = f"=?UTF-8?B?{send_name}?= <{sender_email}>"
-            message["Subject"] = Header(title, "utf-8")
-            if len(receivers) == 1:
-                message["To"] = receivers[0]
+            overall_timeout = max(timeout * 4, timeout + 5)
+            return await asyncio.wait_for(asyncio.to_thread(send_sync), timeout=overall_timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"Email push timed out, SMTP server: {email_host}")
+        except (smtplib.SMTPException, OSError, ValueError) as e:
+            logger.error(f"Email push failed, SMTP server: {email_host}, Error message: {e}")
 
-            t_apart = MIMEText(content, "plain", "utf-8")
-            message.attach(t_apart)
-
-            if open_ssl:
-                smtp_port = smtp_port or 465
-                smtp_obj = smtplib.SMTP_SSL(email_host, int(smtp_port))
-            else:
-                smtp_port = smtp_port or 25
-                smtp_obj = smtplib.SMTP(email_host, int(smtp_port))
-            smtp_obj.login(login_email, password)
-            smtp_obj.sendmail(sender_email, receivers, message.as_string())
-            results["success"] = receivers
-
-        except smtplib.SMTPException as e:
-            logger.info(f"Email push failed, push email: {to_email},  Error message: {e}")
-            results["error"] = receivers
-        return results
+        return {"success": [], "error": receivers}
 
     async def send_to_telegram(
-            self, chat_id: int, token: str, content: str, proxy: Optional[str] = None) -> dict[str, Any]:
+        self, chat_id: int, token: str, content: str, proxy: Optional[str] = None
+    ) -> dict[str, Any]:
         try:
             json_data = {"chat_id": chat_id, "text": content}
             url = "https://api.telegram.org/bot" + token + "/sendMessage"
@@ -110,18 +118,18 @@ class NotificationService:
             return {"success": [], "error": [1]}
 
     async def send_to_bark(
-            self,
-            api: str,
-            title: str = "message",
-            content: str = "test",
-            level: str = "active",
-            badge: int = 1,
-            auto_copy: int = 1,
-            sound: str = "",
-            icon: str = "",
-            group: str = "",
-            is_archive: int = 1,
-            url: str = "",
+        self,
+        api: str,
+        title: str = "message",
+        content: str = "test",
+        level: str = "active",
+        badge: int = 1,
+        auto_copy: int = 1,
+        sound: str = "",
+        icon: str = "",
+        group: str = "",
+        is_archive: int = 1,
+        url: str = "",
     ) -> dict[str, Any]:
         results = {"success": [], "error": []}
         api_list = api.replace("，", ",").split(",") if api.strip() else []
@@ -147,20 +155,20 @@ class NotificationService:
         return results
 
     async def send_to_ntfy(
-            self,
-            api: str,
-            title: str = "message",
-            content: str = "test",
-            tags: str = "tada",
-            priority: int = 3,
-            action_url: str = "",
-            attach: str = "",
-            filename: str = "",
-            click: str = "",
-            icon: str = "",
-            delay: str = "",
-            email: str = "",
-            call: str = "",
+        self,
+        api: str,
+        title: str = "message",
+        content: str = "test",
+        tags: str = "tada",
+        priority: int = 3,
+        action_url: str = "",
+        attach: str = "",
+        filename: str = "",
+        click: str = "",
+        icon: str = "",
+        delay: str = "",
+        email: str = "",
+        call: str = "",
     ) -> dict[str, Any]:
         results = {"success": [], "error": []}
         api_list = api.replace("，", ",").split(",") if api.strip() else []
@@ -194,38 +202,32 @@ class NotificationService:
         return results
 
     async def send_to_serverchan(
-            self,
-            sendkey: str,
-            title: str = "message",
-            content: str = "test",
-            short: str = "",
-            channel: int = 9,
-            tags: str = "partying_face"
+        self,
+        sendkey: str,
+        title: str = "message",
+        content: str = "test",
+        short: str = "",
+        channel: int = 9,
+        tags: str = "partying_face",
     ) -> dict[str, Any]:
 
         results = {"success": [], "error": []}
         sendkey_list = sendkey.replace("，", ",").split(",") if sendkey.strip() else []
 
         for key in sendkey_list:
-            if key.startswith('sctp'):
-                match = re.match(r'sctp(\d+)t', key)
+            if key.startswith("sctp"):
+                match = re.match(r"sctp(\d+)t", key)
                 if match:
                     num = match.group(1)
-                    url = f'https://{num}.push.ft07.com/send/{key}.send'
+                    url = f"https://{num}.push.ft07.com/send/{key}.send"
                 else:
                     logger.error(f"Invalid sendkey format for sctp: {key}")
                     results["error"].append(key)
                     continue
             else:
-                url = f'https://sctapi.ftqq.com/{key}.send'
+                url = f"https://sctapi.ftqq.com/{key}.send"
 
-            json_data = {
-                "title": title,
-                "desp": content,
-                "short": short,
-                "channel": channel,
-                "tags": tags
-            }
+            json_data = {"title": title, "desp": content, "short": short, "channel": channel, "tags": tags}
             resp = await self._async_post(url, json_data)
             if resp.get("code") == 0:
                 results["success"].append(key)
@@ -235,18 +237,13 @@ class NotificationService:
 
         return results
 
-    async def send_to_feishu(
-            self, url: str, content: str
-    ) -> dict[str, list[str]]:
+    async def send_to_feishu(self, url: str, content: str) -> dict[str, list[str]]:
         results = {"success": [], "error": []}
         api_list = [u.strip() for u in url.replace("，", ",").split(",") if u.strip()]
         for api in api_list:
-            json_data = {
-                "msg_type": "text",
-                "content": {"text": content}
-            }
+            json_data = {"msg_type": "text", "content": {"text": content}}
             resp = await self._async_post(api, json_data)
-            if resp.get("msg") == 'success':
+            if resp.get("msg") == "success":
                 results["success"].append(api)
             else:
                 results["error"].append(api)

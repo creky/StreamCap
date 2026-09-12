@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 import flet as ft
 
@@ -7,18 +8,13 @@ from ..utils.logger import logger
 from .tray_manager import TrayManager
 
 
-def _safe_destroy_window(page):
+async def _safe_destroy_window(page):
     try:
-        page.update()
-        to_cancel = asyncio.all_tasks(page.loop)
-        if not to_cancel:
-            return
-        for task in to_cancel:
-            task.cancel()
+        await page.window.destroy()
     except Exception as ex:
         logger.error(f"close window error: {ex}")
     finally:
-        page.window.destroy()
+        os._exit(0)
 
 
 async def handle_app_close(page: ft.Page, app, save_progress_overlay) -> None:
@@ -37,20 +33,26 @@ async def handle_app_close(page: ft.Page, app, save_progress_overlay) -> None:
 
     async def close_dialog_dismissed(e):
         app.recording_enabled = False
-        
+
         app.settings.user_config["last_route"] = page.route
         await app.config_manager.save_user_config(app.settings.user_config)
         logger.info(f"Saved last route: {page.route}")
 
         # check if there are active recordings
         active_recordings = [p for p in app.process_manager.ffmpeg_processes if p.returncode is None]
-        active_recordings_count = len(active_recordings)
+        background_service = BackgroundService.get_instance()
+        active_recordings_count = max(
+            len(active_recordings),
+            sum(not task.done() for task in app.record_manager.active_runtime_tasks),
+            int(background_service.has_pending_work()),
+        )
 
         await close_dialog(e)
 
         if active_recordings_count > 0:
-            save_progress_overlay.show(_["saving_recordings"].format(active_recordings_count=active_recordings_count), 
-                                       cancellable=True)
+            save_progress_overlay.show(
+                _["saving_recordings"].format(active_recordings_count=active_recordings_count), cancellable=True
+            )
             page.update()
 
             cleanup_timeout = max(15, min(active_recordings_count * 6, 60))
@@ -67,10 +69,7 @@ async def handle_app_close(page: ft.Page, app, save_progress_overlay) -> None:
                 logger.error(f"close window error: {ex}")
 
             post_process_timeout = max(10, min(active_recordings_count * 6, 90))
-            logger.info(
-                f"Waiting for recording shutdown tasks to finish "
-                f"(timeout: {post_process_timeout}s)"
-            )
+            logger.info(f"Waiting for recording shutdown tasks to finish (timeout: {post_process_timeout}s)")
             try:
                 runtime_tasks_done = await asyncio.wait_for(
                     app.record_manager.wait_for_runtime_tasks(),
@@ -83,13 +82,9 @@ async def handle_app_close(page: ft.Page, app, save_progress_overlay) -> None:
             except Exception as ex:
                 logger.error(f"Failed while waiting for recording shutdown tasks: {ex}")
 
-            background_service = BackgroundService.get_instance()
             if background_service.has_pending_work():
                 background_timeout = max(10, min(active_recordings_count * 8, 120))
-                logger.info(
-                    f"Waiting for background conversion tasks to finish "
-                    f"(timeout: {background_timeout}s)"
-                )
+                logger.info(f"Waiting for background conversion tasks to finish (timeout: {background_timeout}s)")
                 try:
                     background_done = await asyncio.to_thread(
                         background_service.wait_for_completion,
@@ -106,11 +101,11 @@ async def handle_app_close(page: ft.Page, app, save_progress_overlay) -> None:
 
             if not getattr(app, "is_web_mode", False) and hasattr(app, "tray_manager"):
                 app.tray_manager.stop()
-            _safe_destroy_window(page)
+            await _safe_destroy_window(page)
         else:
             if not getattr(app, "is_web_mode", False) and hasattr(app, "tray_manager"):
                 app.tray_manager.stop()
-            _safe_destroy_window(page)
+            await _safe_destroy_window(page)
 
     async def close_dialog(_):
         close_confirm_dialog.open = False
@@ -122,21 +117,21 @@ async def handle_app_close(page: ft.Page, app, save_progress_overlay) -> None:
             size=14,
             text_align=ft.TextAlign.CENTER,
         ),
-        ft.Container(height=10)
+        ft.Container(height=10),
     ]
 
-    if page.platform.value != 'macos':
+    if page.platform.value != "macos":
         close_confirm_controls.append(
             ft.Container(
                 content=ft.Text(
                     _["minimize_to_tray_tip"],
                     size=12,
-                    color=ft.colors.GREY_500,
+                    color=ft.Colors.GREY_500,
                     text_align=ft.TextAlign.CENTER,
                 ),
-                padding=ft.padding.all(8),
+                padding=ft.Padding.all(8),
                 border_radius=5,
-                bgcolor=ft.colors.with_opacity(0.1, ft.colors.BLUE_GREY),
+                bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.BLUE_GREY),
             )
         )
 
@@ -145,26 +140,28 @@ async def handle_app_close(page: ft.Page, app, save_progress_overlay) -> None:
             content=ft.Text(_["cancel"], size=14),
             on_click=close_dialog,
             style=ft.ButtonStyle(
-                color=ft.colors.PRIMARY,
+                color=ft.Colors.PRIMARY,
             ),
         ),
         ft.OutlinedButton(
             content=ft.Text(_["exit_program"], size=14),
             on_click=close_dialog_dismissed,
             style=ft.ButtonStyle(
-                color=ft.colors.ERROR,
+                color=ft.Colors.ERROR,
             ),
         ),
     ]
-    if page.platform.value != 'macos':
+    if page.platform.value != "macos":
         close_confirm_actions.insert(
-            1, ft.TextButton(
+            1,
+            ft.TextButton(
                 content=ft.Text(_["minimize_to_tray"], size=14),
                 on_click=minimize_to_tray,
                 style=ft.ButtonStyle(
-                    color=ft.colors.PRIMARY,
+                    color=ft.Colors.PRIMARY,
                 ),
-            ))
+            ),
+        )
 
     close_confirm_dialog = ft.AlertDialog(
         modal=True,
@@ -181,8 +178,8 @@ async def handle_app_close(page: ft.Page, app, save_progress_overlay) -> None:
                 tight=True,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            padding=ft.padding.symmetric(horizontal=20, vertical=10),
-            width=400 if page.platform.value != 'macos' else None,
+            padding=ft.Padding.symmetric(horizontal=20, vertical=10),
+            width=400 if page.platform.value != "macos" else None,
         ),
         actions=close_confirm_actions,
         actions_alignment=ft.MainAxisAlignment.END,
