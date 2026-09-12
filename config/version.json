@@ -6,6 +6,43 @@
   "open_source_license": "Apache License 2.0",
   "version_updates": [
     {
+      "version": "1.0.4",
+      "kernel_version": "4.0.10",
+      "updates": {
+        "en": [
+          "Fix false account-ban detection when recording Kuaishou live streams",
+          "Send the configured Cookie and live room Referer when fetching Kuaishou live pages",
+          "Fix home page loading with fewer than three announcements and log page loading errors",
+          "Save Windows release logs in the logs folder beside StreamCap.exe",
+          "Use the bundled Flet client in an isolated cache to prevent startup failures caused by leftover clients",
+          "Read and write Windows release configuration in the config folder beside StreamCap.exe, preserving existing files"
+        ],
+        "zh_CN": [
+          "修复快手直播录制误判账号封禁的问题",
+          "修复快手直播页请求未携带 Cookie 和当前直播间 Referer 的问题",
+          "修复公告不足三条时主页无法加载的问题，并记录页面加载异常",
+          "Windows 发布版日志保存到 StreamCap.exe 同级的 logs 目录",
+          "固定使用随包 Flet 客户端和独立缓存，修复旧客户端残留导致的启动转圈",
+          "Windows 发布版配置读写改为 StreamCap.exe 同级 config 目录，保留已有配置"
+        ]
+      },
+      "release_date": "2026-09-12",
+      "announcement": {
+        "en": [
+          {
+            "title": "StreamCap v1.0.4 is officially released",
+            "content": "Fix Kuaishou recording, home page loading, and startup failures caused by leftover desktop clients"
+          }
+        ],
+        "zh_CN": [
+          {
+            "title": "StreamCap v1.0.4 正式发布",
+            "content": "修复快手录制、主页加载，以及旧桌面客户端残留导致的启动转圈"
+          }
+        ]
+      }
+    },
+    {
       "version": "1.0.3",
       "kernel_version": "4.0.10",
       "updates": {

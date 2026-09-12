@@ -41,9 +41,13 @@ else:
     user_data_dir = _EXECUTABLE_DIR
 
 if getattr(sys, "frozen", False) and sys.platform == "win32":
+    config_dir = _EXECUTABLE_DIR / "config"
     default_recordings_dir = _EXECUTABLE_DIR / "downloads"
+    log_dir = _EXECUTABLE_DIR / "logs"
 else:
+    config_dir = user_data_dir / "config"
     default_recordings_dir = user_data_dir / "downloads"
+    log_dir = user_data_dir / "logs"
 
 
 def prepare_user_data_dir() -> None:
@@ -54,9 +58,17 @@ def prepare_user_data_dir() -> None:
 
     for directory in ("config", "locales"):
         source = resource_dir / directory
-        target = user_data_dir / directory
+        target = config_dir if directory == "config" else user_data_dir / directory
         if source.is_dir():
-            shutil.copytree(source, target, dirs_exist_ok=True)
+            if directory == "config" and getattr(sys, "frozen", False) and sys.platform == "win32":
+                target.mkdir(parents=True, exist_ok=True)
+                for filename in ("default_settings.json", "language.json", "version.json"):
+                    source_file = source / filename
+                    target_file = target / filename
+                    if source_file.is_file() and not target_file.exists():
+                        shutil.copy2(source_file, target_file)
+            else:
+                shutil.copytree(source, target, dirs_exist_ok=True)
 
     prepare_bundled_ffmpeg()
     prepare_bundled_node()

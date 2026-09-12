@@ -1,7 +1,7 @@
 param(
     [string]$OutputName = "pack_windows_rel_streamget",
-    [string]$ProductVersion = "1.0.2",
-    [string]$FileVersion = "1.0.2.0",
+    [string]$ProductVersion = "1.0.4",
+    [string]$FileVersion = "1.0.4.0",
     [switch]$SkipEditableInstall
 )
 

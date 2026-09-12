@@ -307,25 +307,18 @@ class HomePage(PageBase):
             )
 
         announcement_list = self.app.about.about_config["version_updates"][0]["announcement"][self.app.language_code]
+        announcement_styles = (
+            (ft.Icons.NEW_RELEASES_ROUNDED, ft.Colors.GREEN),
+            (ft.Icons.LIGHTBULB_OUTLINE_ROUNDED, ft.Colors.AMBER),
+            (ft.Icons.UPCOMING_ROUNDED, ft.Colors.BLUE),
+        )
         announcements = [
             create_announcement_card(
-                announcement_list[0]["title"],
-                announcement_list[0]["content"],
-                ft.Icons.NEW_RELEASES_ROUNDED,
-                ft.Colors.GREEN,
-            ),
-            create_announcement_card(
-                announcement_list[1]["title"],
-                announcement_list[1]["content"],
-                ft.Icons.LIGHTBULB_OUTLINE_ROUNDED,
-                ft.Colors.AMBER,
-            ),
-            create_announcement_card(
-                announcement_list[2]["title"],
-                announcement_list[2]["content"],
-                ft.Icons.UPCOMING_ROUNDED,
-                ft.Colors.BLUE,
-            ),
+                announcement["title"],
+                announcement["content"],
+                *announcement_styles[index % len(announcement_styles)],
+            )
+            for index, announcement in enumerate(announcement_list)
         ]
 
         return ft.Container(

@@ -148,21 +148,68 @@ def patch_macos_flet_launcher() -> None:
 
 def setup_bundled_flet_view() -> None:
     """Configure the bundled Flet view path for PyInstaller desktop packages."""
-    if not getattr(sys, "frozen", False):
+    if not (getattr(sys, "frozen", False) and platform.system() == "Windows"):
         return
 
-    if platform.system() == "Darwin":
-        # Let flet_desktop use its official macOS flow: locate bundled
-        # flet-macos.tar.gz in the package app directory, extract it to the
-        # Flet client cache, then launch the discovered .app bundle.
-        return
+    import asyncio
+    import hashlib
+    import subprocess
+    import tempfile
+    import zipfile
 
-    if hasattr(sys, "_MEIPASS"):
-        # noinspection PyProtectedMember
-        base = Path(sys._MEIPASS)
-    else:
-        base = Path(sys.executable).parent / "_internal"
+    import flet_desktop
+    from flet.utils import random_string, safe_zip_extractall
 
-    view_path = base / "flet_desktop" / "app" / "flet"
-    if (view_path / "flet.exe").is_file():
-        os.environ["FLET_VIEW_PATH"] = str(view_path)
+    from app.core.runtime.paths import resource_dir, user_data_dir
+    from app.utils.logger import startup_logger
+
+    archive_path = Path(resource_dir) / "flet_desktop" / "app" / "flet-windows.zip"
+    archive_hash = hashlib.sha256()
+    with archive_path.open("rb") as archive_file:
+        for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
+            archive_hash.update(chunk)
+    digest = archive_hash.hexdigest()
+    cache_root = Path(user_data_dir) / "flet_client"
+    cache_dir = cache_root / digest
+    client_executable = cache_dir / "flet" / "flet.exe"
+
+    if not cache_dir.exists():
+        cache_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".extract-", dir=cache_root) as temp_dir:
+            with zipfile.ZipFile(archive_path) as archive:
+                safe_zip_extractall(archive, temp_dir)
+            if not (Path(temp_dir) / "flet" / "flet.exe").is_file():
+                raise FileNotFoundError(f"Flet executable missing from bundled archive: {archive_path}")
+            try:
+                Path(temp_dir).rename(cache_dir)
+            except FileExistsError:
+                # Another instance may have finished extracting the same archive.
+                if not client_executable.is_file():
+                    raise
+
+    if not client_executable.is_file():
+        raise FileNotFoundError(f"Cached Flet executable missing: {client_executable}")
+    startup_logger.info(
+        "Using bundled Flet client: archive={}, sha256={}, executable={}", archive_path, digest, client_executable
+    )
+
+    def build_launch_args(page_url, assets_dir, hidden):
+        pid_file = str(Path(tempfile.gettempdir()) / random_string(20))
+        args = [str(client_executable), page_url, pid_file]
+        if assets_dir:
+            args.append(assets_dir)
+        env = os.environ.copy()
+        if hidden:
+            env["FLET_HIDE_WINDOW_ON_START"] = "true"
+        return args, env, pid_file
+
+    def open_flet_view(page_url, assets_dir, hidden):
+        args, env, pid_file = build_launch_args(page_url, assets_dir, hidden)
+        return subprocess.Popen(args, env=env), pid_file
+
+    async def open_flet_view_async(page_url, assets_dir, hidden):
+        args, env, pid_file = build_launch_args(page_url, assets_dir, hidden)
+        return await asyncio.create_subprocess_exec(args[0], *args[1:], env=env), pid_file
+
+    flet_desktop.open_flet_view = open_flet_view
+    flet_desktop.open_flet_view_async = open_flet_view_async

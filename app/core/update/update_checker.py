@@ -52,7 +52,7 @@ class UpdateChecker:
 
     def _get_current_version(self) -> str:
         try:
-            config_path = os.path.join(self.app.run_path, "config", "version.json")
+            config_path = self.app.config_manager.about_config_path
             with open(config_path, encoding="utf-8") as f:
                 version_data = json.load(f)
                 return version_data["version_updates"][0]["version"]

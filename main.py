@@ -1,23 +1,27 @@
 import argparse
+import json
 import multiprocessing
 import os
+import platform as platform_info
+import sys
 from collections.abc import Callable
 
 import flet as ft
 from dotenv import load_dotenv
+from flet.version import flet_version
 from screeninfo import get_monitors
 
 from app.app_manager import App, execute_dir
 from app.auth.auth_manager import AuthManager
 from app.core.runtime.backend_services import BackendServices
 from app.core.runtime.bundled_env import patch_macos_flet_launcher, setup_bundled_flet_view
-from app.core.runtime.paths import prepend_user_bin_dirs, resource_dir
+from app.core.runtime.paths import config_dir, prepend_user_bin_dirs, resource_dir
 from app.lifecycle.app_close_handler import handle_app_close
 from app.lifecycle.tray_manager import TrayManager
 from app.ui.components.common.save_progress_overlay import SaveProgressOverlay
 from app.ui.layout.responsive_layout import setup_responsive_layout
 from app.ui.views.login_view import LoginPage
-from app.utils.logger import logger
+from app.utils.logger import logger, startup_logger
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 6006
@@ -131,15 +135,20 @@ def handle_page_resize(page: ft.Page, app: App) -> Callable:
     return on_resize
 
 
+@startup_logger.catch(reraise=True)
 async def main(page: ft.Page) -> None:
+    startup_logger.info("Page session entered: web={}", page.web)
     page.title = "StreamCap"
 
     _services = BackendServices.get()
+    startup_logger.info("Creating page application")
     app = App(page, services=_services)
+    startup_logger.info("Page application created")
     page.data = app
     app.is_web_mode = page.web
     app.is_mobile = False
     await setup_desktop_window(page, app)
+    startup_logger.info("Desktop window setup completed")
 
     if not page.web:
         try:
@@ -226,11 +235,34 @@ async def main(page: ft.Page) -> None:
             app.current_username = "admin"
 
     await load_app()
+    startup_logger.info("Page main handler completed")
 
 
-if __name__ == "__main__":
-    multiprocessing.freeze_support()
-
+@startup_logger.catch(reraise=True)
+def run() -> None:
+    with open(config_dir / "version.json", encoding="utf-8") as file:
+        app_version = json.load(file)["version_updates"][0]["version"]
+    build_info_path = os.path.join(resource_dir, "build_info.json")
+    build_id = "source"
+    if os.path.isfile(build_info_path):
+        with open(build_info_path, encoding="utf-8") as file:
+            build_id = json.load(file)["build_id"]
+    startup_logger.info(
+        "Startup: version={}, build={}, executable={}, frozen={}, pid={}, cwd={}",
+        app_version,
+        build_id,
+        sys.executable,
+        getattr(sys, "frozen", False),
+        os.getpid(),
+        os.getcwd(),
+    )
+    startup_logger.info(
+        "Runtime: system={}, architecture={}, Python={}, Flet={}",
+        platform_info.platform(),
+        platform_info.machine(),
+        platform_info.python_version(),
+        flet_version,
+    )
     load_dotenv()
     platform = os.getenv("PLATFORM")
     default_host = os.getenv("HOST", DEFAULT_HOST)
@@ -244,7 +276,9 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=default_port, help=f"Port number (default: {default_port})")
     args = parser.parse_args()
 
+    startup_logger.info("Backend initialization starting: data_dir={}, config_dir={}", execute_dir, config_dir)
     services = BackendServices.bootstrap(execute_dir)
+    startup_logger.info("Backend initialization completed")
 
     is_web = args.web or platform == "web"
     if is_web:
@@ -260,6 +294,14 @@ if __name__ == "__main__":
             no_cdn=True,
         )
     else:
+        startup_logger.info("Preparing desktop client")
         setup_bundled_flet_view()
         patch_macos_flet_launcher()
+        startup_logger.info("Starting Flet desktop server and client")
         ft.run(main=main, view=ft.AppView.FLET_APP_HIDDEN, assets_dir=assets_dir)
+    startup_logger.info("Flet runner exited")
+
+
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    run()

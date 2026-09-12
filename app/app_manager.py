@@ -17,7 +17,7 @@ from .ui.views.home_view import HomePage
 from .ui.views.recordings_view import RecordingsPage
 from .ui.views.settings_view import SettingsPage
 from .ui.views.storage_view import StoragePage
-from .utils.logger import logger
+from .utils.logger import logger, startup_logger
 
 
 class App:
@@ -168,6 +168,7 @@ class App:
         if self._loading_page:
             return
         self._loading_page = True
+        startup_logger.info("Page load starting: {}", page_name)
 
         try:
             self.page.on_resize = None
@@ -179,6 +180,10 @@ class App:
                 if rail is not None:
                     rail.select_page(page_name)
                 await page.load()
+                startup_logger.info("Page load completed: {}", page_name)
+        except Exception:
+            startup_logger.exception("Failed to load page: {}", page_name)
+            raise
         finally:
             self._loading_page = False
 

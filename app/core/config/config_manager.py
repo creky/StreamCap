@@ -2,11 +2,13 @@ import asyncio
 import json
 import os
 import shutil
+import sys
 import tempfile
 import threading
 from typing import TypeVar
 
 from ...utils.logger import logger
+from ..runtime.paths import config_dir
 
 T = TypeVar("T")
 
@@ -14,6 +16,8 @@ T = TypeVar("T")
 class ConfigManager:
     def __init__(self, run_path):
         self.config_path = os.path.join(run_path, "config")
+        if getattr(sys, "frozen", False) and sys.platform == "win32":
+            self.config_path = str(config_dir)
         self.language_config_path = os.path.join(self.config_path, "language.json")
         self.default_config_path = os.path.join(self.config_path, "default_settings.json")
         self.user_config_path = os.path.join(self.config_path, "user_settings.json")
@@ -52,7 +56,9 @@ class ConfigManager:
         self._init_config(self.default_config_path, default_config)
 
     def init_user_config(self):
-        if os.path.exists(self.user_config_path) and self.load_user_config():
+        if os.path.exists(self.user_config_path) and (
+            (getattr(sys, "frozen", False) and sys.platform == "win32") or self.load_user_config()
+        ):
             return
         shutil.copy(self.default_config_path, self.user_config_path)
 
