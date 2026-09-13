@@ -458,6 +458,10 @@ class LiveStreamRecorder:
             stream_info = await handler.get_stream_info(self.live_url)
             last_stream_info = stream_info
 
+            if stream_info and (stream_info.extra or {}).get("account_status"):
+                self.recording.is_checking = False
+                return stream_info
+
             if stream_info and getattr(stream_info, "live_url", None):
                 self.live_url = stream_info.live_url
 

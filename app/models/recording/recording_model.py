@@ -20,6 +20,7 @@ class Recording:
         only_notify_no_record,
         flv_use_direct_download,
         video_bitrate=None,
+        platform_user_id=None,
     ):
         """
         Initialize a recording object.
@@ -58,6 +59,7 @@ class Recording:
         self.only_notify_no_record = only_notify_no_record
         self.flv_use_direct_download = flv_use_direct_download
         self.video_bitrate = video_bitrate
+        self.platform_user_id = platform_user_id
         self.scheduled_time_range = None
         self.title = f"{streamer_name} - {self.quality}"
         self.speed = "X KB/s"
@@ -80,6 +82,7 @@ class Recording:
         self.is_checking = False
         self.showed_checking_status = False
         self.status_info = None
+        self.account_status = None
         self.live_title = None
         self.live_url = None
         self.detection_time = None
@@ -106,7 +109,9 @@ class Recording:
             "enabled_message_push": self.enabled_message_push,
             "platform": self.platform,
             "platform_key": self.platform_key,
+            "platform_user_id": self.platform_user_id,
             "live_url": self.live_url,
+            "account_status": self.account_status,
             "only_notify_no_record": self.only_notify_no_record,
             "flv_use_direct_download": self.flv_use_direct_download,
             "video_bitrate": self.video_bitrate,
@@ -132,6 +137,7 @@ class Recording:
             data.get("only_notify_no_record"),
             data.get("flv_use_direct_download"),
             data.get("video_bitrate"),
+            data.get("platform_user_id"),
         )
         recording.title = data.get("title", recording.title)
         recording.display_title = data.get("display_title", recording.title)
@@ -139,6 +145,7 @@ class Recording:
         recording.platform = data.get("platform")
         recording.platform_key = data.get("platform_key")
         recording.live_url = data.get("live_url")
+        recording.account_status = data.get("account_status")
         if recording.last_duration_str is not None:
             recording.last_duration = timedelta(seconds=float(recording.last_duration_str))
         return recording

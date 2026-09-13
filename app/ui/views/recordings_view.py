@@ -577,6 +577,7 @@ class RecordingsPage(PageBase):
                 )
 
             platform, platform_key = get_platform_info(recording.url)
+            recording.platform_user_id = recording_info.get("platform_user_id")
             if platform and platform_key:
                 recording.platform = platform
                 recording.platform_key = platform_key

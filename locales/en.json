@@ -108,8 +108,10 @@
     "select_media_type": "Select Media Type",
     "video": "Video",
     "audio": "Audio",
-    "duplicate_url_title": "Duplicate Live Room URL",
-    "duplicate_url_content": "The live room URL already exists, do you want to continue adding?"
+    "duplicate_url_title": "Duplicate Recording Entry",
+    "duplicate_url_content": "The following entries already exist:\n{names}\n\nSave this entry anyway?",
+    "duplicate_batch_title": "Duplicate Entries Skipped",
+    "duplicate_batch_item": "{url}\nExisting entries:\n{names}"
   },
   "search_dialog": {
     "search_keyword": "Enter search keyword"
@@ -184,6 +186,10 @@
     "all": "All",
     "recording": "Recording",
     "recording_error": "Recording Error",
+    "user_not_found": "User Not Found",
+    "user_deleted": "Account Deleted",
+    "user_muted": "User Muted",
+    "user_banned": "User Banned",
     "live_broadcasting": "Live Broadcasting",
     "not_live": "Not Live",
     "stopped": "Stopped",

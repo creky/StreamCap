@@ -115,11 +115,26 @@ class RecordingCardManager:
         speed_text_label = ft.Text(speed, size=12)
 
         status_label = self.create_status_label(recording)
+        account_status_label = ft.Container(
+            content=ft.Text(
+                self._.get(recording.account_status, ""),
+                color=ft.Colors.WHITE,
+                size=12,
+                weight=ft.FontWeight.BOLD,
+                no_wrap=True,
+            ),
+            bgcolor=ft.Colors.RED,
+            border_radius=5,
+            padding=5,
+            height=26,
+            alignment=ft.Alignment.CENTER,
+            visible=bool(recording.account_status),
+        )
 
         title_row = ft.Row(
-            [display_title_label, status_label] if status_label else [display_title_label],
+            [display_title_label, account_status_label] + ([status_label] if status_label else []),
             alignment=ft.MainAxisAlignment.START,
-            spacing=5,
+            spacing=6,
             tight=True,
         )
 
@@ -166,6 +181,7 @@ class RecordingCardManager:
             "edit_button": edit_button,
             "monitor_button": monitor_button,
             "status_label": status_label,
+            "account_status_label": account_status_label,
         }
 
     def get_card_background_color(self, recording: Recording):
@@ -215,8 +231,12 @@ class RecordingCardManager:
 
         title_row = card.content.content.controls[0]
         title_row.alignment = ft.MainAxisAlignment.START
-        title_row.spacing = 5
+        title_row.spacing = 6
         title_row.tight = True
+
+        account_status_label = recording_card["account_status_label"]
+        account_status_label.content.value = self._.get(recording.account_status, "")
+        account_status_label.visible = bool(recording.account_status)
 
         status_label = recording_card.get("status_label")
         if not status_config:

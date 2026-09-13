@@ -108,8 +108,10 @@
     "select_media_type": "选择媒体类型",
     "video": "视频",
     "audio": "音频",
-    "duplicate_url_title": "重复的直播间地址",
-    "duplicate_url_content": "该直播间已存在，是否继续添加？"
+    "duplicate_url_title": "重复的直播条目",
+    "duplicate_url_content": "已存在以下条目：\n{names}\n\n是否仍然保存此条目？",
+    "duplicate_batch_title": "已跳过重复条目",
+    "duplicate_batch_item": "{url}\n已存在：\n{names}"
   },
   "search_dialog": {
     "search_keyword": "输入搜索关键词"
@@ -184,6 +186,10 @@
     "all": "全部",
     "recording": "录制中",
     "recording_error": "录制错误",
+    "user_not_found": "用户不存在",
+    "user_deleted": "用户已注销",
+    "user_muted": "用户被禁言",
+    "user_banned": "用户被封禁",
     "live_broadcasting": "正在直播中",
     "not_live": "未开播",
     "stopped": "已停止",

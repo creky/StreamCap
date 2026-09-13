@@ -1,7 +1,7 @@
 import streamget
 from deprecated import deprecated
 
-from ....utils.utils import trace_error_decorator
+from ..errors import trace_error_decorator
 from ..kuaishou import KuaishouLiveStream
 from .base import PlatformHandler, StreamData
 
@@ -58,7 +58,12 @@ class DouyinHandler(PlatformHandler):
             json_data = await self.live_stream.fetch_app_stream_data(url=live_url)
         else:
             json_data = await self.live_stream.fetch_web_stream_data(url=live_url)
-        return await self.live_stream.fetch_stream_url(json_data, self.record_quality)
+        stream_info = await self.live_stream.fetch_stream_url(json_data, self.record_quality)
+        owner = json_data.get("owner") or {}
+        user_id = owner.get("unique_id")
+        if user_id:
+            stream_info.extra = (stream_info.extra or {}) | {"platform_user_id": str(user_id)}
+        return stream_info
 
 
 class TikTokHandler(PlatformHandler):

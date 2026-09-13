@@ -36,9 +36,12 @@ class RecordingDialog:
         segment_time = config.get_value("segment_time", "video_segment_time", 1800)
         only_notify_no_record = config.get_value("only_notify_no_record", default=False)
         flv_use_direct_download = config.get_value("flv_use_direct_download", default=False)
+        submitting = False
 
         async def on_url_change(_):
             """Enable or disable the submit button based on whether the URL field is filled."""
+            if submitting:
+                return
             url_value = url_field.value.strip() if url_field.value else ""
             batch_value = batch_input.value.strip() if batch_input.value else ""
             is_active = utils.is_valid_url(url_value) or utils.contains_url(batch_value)
@@ -377,9 +380,8 @@ class RecordingDialog:
             logger.warning(f"This platform does not support recording: {url}")
             await self.app.snack_bar.show_snack_bar(self._["platform_not_supported_tip"], duration=3000)
 
-        def get_existing_recordings():
-            existing_recordings = [rec.url for rec in self.app.record_manager.recordings]
-            return existing_recordings
+        def duplicate_names(duplicates):
+            return "\n".join(f"• {item.get('streamer_name') or item['url']}" for item in duplicates)
 
         async def submit_recordings_info(event, recordings_info):
             # Close the dialog first so the UI responds immediately,
@@ -387,9 +389,7 @@ class RecordingDialog:
             await close_dialog(event)
             await self.on_confirm_callback(recordings_info)
 
-        async def on_confirm(e):
-
-            existing_recordings = get_existing_recordings()
+        async def submit(e):
 
             if tabs.selected_index == 0:
                 video_bitrate = None
@@ -449,7 +449,9 @@ class RecordingDialog:
                     }
                 ]
 
-                if live_url in existing_recordings and not rec_id:
+                await self.app.record_manager.resolve_recording_identities(recordings_info)
+                duplicates = self.app.record_manager.find_recording_duplicates(recordings_info[0])
+                if duplicates:
 
                     async def confirm_duplicate():
                         async def close_duplicate_dialog(_):
@@ -464,7 +466,11 @@ class RecordingDialog:
                         duplicate_confirm_dialog = ft.AlertDialog(
                             modal=True,
                             title=ft.Text(self._["duplicate_url_title"]),
-                            content=ft.Text(self._["duplicate_url_content"]),
+                            content=ft.Column(
+                                [ft.Text(self._["duplicate_url_content"].format(names=duplicate_names(duplicates)))],
+                                tight=True,
+                                scroll=ft.ScrollMode.AUTO,
+                            ),
                             actions=[
                                 ft.TextButton(self._["cancel"], on_click=close_duplicate_dialog),
                                 ft.TextButton(self._["sure"], on_click=proceed_with_add),
@@ -485,7 +491,6 @@ class RecordingDialog:
             elif tabs.selected_index == 1:  # Batch entry
                 lines = batch_input.value.splitlines()
                 recordings_info = []
-                batch_url_list = []
                 streamer_name = ""
                 quality = "OD"
                 quality_dict = {"0": "OD", "1": "UHD", "2": "HD", "3": "SD", "4": "LD"}
@@ -508,11 +513,6 @@ class RecordingDialog:
                         await not_supported(url)
                         continue
 
-                    existing_urls = set(batch_url_list) | set(existing_recordings)
-                    if url.strip() in existing_urls:
-                        logger.info(f"Skip {url.strip()}, the live room URL already exists.")
-                        continue
-
                     quality = quality_dict.get(quality, "OD")
                     title = f"{streamer_name} - {self._[quality]}"
                     display_title = title
@@ -528,10 +528,50 @@ class RecordingDialog:
                         "title": title,
                         "display_title": display_title,
                     }
-                    batch_url_list.append(url.strip())
                     recordings_info.append(recording_info)
 
-                await submit_recordings_info(e, recordings_info)
+                await self.app.record_manager.resolve_recording_identities(recordings_info)
+                accepted = []
+                duplicate_messages = []
+                for info in recordings_info:
+                    duplicates = self.app.record_manager.find_recording_duplicates(info, accepted)
+                    if duplicates:
+                        duplicate_messages.append(
+                            self._["duplicate_batch_item"].format(url=info["url"], names=duplicate_names(duplicates))
+                        )
+                    else:
+                        accepted.append(info)
+                await submit_recordings_info(e, accepted)
+                if duplicate_messages:
+
+                    async def close_batch_notice(_):
+                        batch_notice.open = False
+                        self.page.update()
+
+                    batch_notice = ft.AlertDialog(
+                        modal=True,
+                        title=ft.Text(self._["duplicate_batch_title"]),
+                        content=ft.Column(
+                            [ft.Text("\n\n".join(duplicate_messages))], tight=True, scroll=ft.ScrollMode.AUTO
+                        ),
+                        actions=[ft.TextButton(self._["sure"], on_click=close_batch_notice)],
+                    )
+                    batch_notice.open = True
+                    self.page.overlay.append(batch_notice)
+                    self.page.update()
+
+        async def on_confirm(e):
+            nonlocal submitting
+            if submitting:
+                return
+            submitting = True
+            dialog.actions[1].disabled = True
+            self.page.update()
+            try:
+                await submit(e)
+            finally:
+                submitting = False
+                await on_url_change(e)
 
         async def close_dialog(_):
             dialog.open = False
