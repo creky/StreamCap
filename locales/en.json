@@ -107,11 +107,7 @@
     "minute_label_text": "Minute",
     "select_media_type": "Select Media Type",
     "video": "Video",
-    "audio": "Audio",
-    "duplicate_url_title": "Duplicate Recording Entry",
-    "duplicate_url_content": "The following entries already exist:\n{names}\n\nSave this entry anyway?",
-    "duplicate_batch_title": "Duplicate Entries Skipped",
-    "duplicate_batch_item": "{url}\nExisting entries:\n{names}"
+    "audio": "Audio"
   },
   "search_dialog": {
     "search_keyword": "Enter search keyword"
@@ -146,6 +142,7 @@
     "no_ffmpeg_tip": "FFmpeg is not installed, please install FFmpeg first ⚠️"
   },
   "recording_card": {
+    "duplicate_recording": "Duplicate of {names}",
     "stop_monitor_tip": "Tip: Live monitoring has been stopped",
     "start_monitor_tip": "Tip: Live monitoring has been started",
     "please_stop_monitor_tip": "Tip: Please stop live monitoring first️",

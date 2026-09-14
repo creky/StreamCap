@@ -60,6 +60,7 @@ class Recording:
         self.flv_use_direct_download = flv_use_direct_download
         self.video_bitrate = video_bitrate
         self.platform_user_id = platform_user_id
+        self.duplicate_names = []
         self.scheduled_time_range = None
         self.title = f"{streamer_name} - {self.quality}"
         self.speed = "X KB/s"

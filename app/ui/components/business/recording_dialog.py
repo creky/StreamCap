@@ -380,9 +380,6 @@ class RecordingDialog:
             logger.warning(f"This platform does not support recording: {url}")
             await self.app.snack_bar.show_snack_bar(self._["platform_not_supported_tip"], duration=3000)
 
-        def duplicate_names(duplicates):
-            return "\n".join(f"• {item.get('streamer_name') or item['url']}" for item in duplicates)
-
         async def submit_recordings_info(event, recordings_info):
             # Close the dialog first so the UI responds immediately,
             # then continue with the async save/update work.
@@ -449,44 +446,7 @@ class RecordingDialog:
                     }
                 ]
 
-                await self.app.record_manager.resolve_recording_identities(recordings_info)
-                duplicates = self.app.record_manager.find_recording_duplicates(recordings_info[0])
-                if duplicates:
-
-                    async def confirm_duplicate():
-                        async def close_duplicate_dialog(_):
-                            self.url_duplicate_confirm_dialog.open = False
-                            self.page.update()
-                            await close_dialog(e)
-
-                        async def proceed_with_add(_):
-                            await close_duplicate_dialog(e)
-                            await self.on_confirm_callback(recordings_info)
-
-                        duplicate_confirm_dialog = ft.AlertDialog(
-                            modal=True,
-                            title=ft.Text(self._["duplicate_url_title"]),
-                            content=ft.Column(
-                                [ft.Text(self._["duplicate_url_content"].format(names=duplicate_names(duplicates)))],
-                                tight=True,
-                                scroll=ft.ScrollMode.AUTO,
-                            ),
-                            actions=[
-                                ft.TextButton(self._["cancel"], on_click=close_duplicate_dialog),
-                                ft.TextButton(self._["sure"], on_click=proceed_with_add),
-                            ],
-                            actions_alignment=ft.MainAxisAlignment.END,
-                        )
-
-                        self.url_duplicate_confirm_dialog = duplicate_confirm_dialog
-                        self.url_duplicate_confirm_dialog.open = True
-                        self.page.overlay.append(duplicate_confirm_dialog)
-                        self.page.update()
-
-                    await confirm_duplicate()
-                    return
-                else:
-                    await submit_recordings_info(e, recordings_info)
+                await submit_recordings_info(e, recordings_info)
 
             elif tabs.selected_index == 1:  # Batch entry
                 lines = batch_input.value.splitlines()
@@ -530,35 +490,7 @@ class RecordingDialog:
                     }
                     recordings_info.append(recording_info)
 
-                await self.app.record_manager.resolve_recording_identities(recordings_info)
-                accepted = []
-                duplicate_messages = []
-                for info in recordings_info:
-                    duplicates = self.app.record_manager.find_recording_duplicates(info, accepted)
-                    if duplicates:
-                        duplicate_messages.append(
-                            self._["duplicate_batch_item"].format(url=info["url"], names=duplicate_names(duplicates))
-                        )
-                    else:
-                        accepted.append(info)
-                await submit_recordings_info(e, accepted)
-                if duplicate_messages:
-
-                    async def close_batch_notice(_):
-                        batch_notice.open = False
-                        self.page.update()
-
-                    batch_notice = ft.AlertDialog(
-                        modal=True,
-                        title=ft.Text(self._["duplicate_batch_title"]),
-                        content=ft.Column(
-                            [ft.Text("\n\n".join(duplicate_messages))], tight=True, scroll=ft.ScrollMode.AUTO
-                        ),
-                        actions=[ft.TextButton(self._["sure"], on_click=close_batch_notice)],
-                    )
-                    batch_notice.open = True
-                    self.page.overlay.append(batch_notice)
-                    self.page.update()
+                await submit_recordings_info(e, recordings_info)
 
         async def on_confirm(e):
             nonlocal submitting

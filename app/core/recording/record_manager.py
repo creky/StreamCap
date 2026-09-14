@@ -33,6 +33,7 @@ class RecordingManager:
         self._ = {}
         self.load()
         self.initialize_dynamic_state()
+        self.refresh_recording_duplicates()
         max_concurrent = int(self.settings.user_config.get("platform_max_concurrent_requests", 3))
         self.platform_semaphores = defaultdict(lambda: asyncio.Semaphore(max_concurrent))
         self.active_recorders = {}
@@ -79,6 +80,7 @@ class RecordingManager:
         with GlobalRecordingState.lock:
             GlobalRecordingState.recordings.extend(recordings)
             await self.persist_recordings()
+        self.services.run_coro(self.resolve_recording_identities([rec.to_dict() for rec in recordings]))
 
     def register_runtime_task(self, task: asyncio.Task | None):
         if task is None or task in self.active_runtime_tasks:
@@ -116,10 +118,11 @@ class RecordingManager:
 
     async def persist_recordings(self):
         """Persist recordings to a JSON file."""
+        self.refresh_recording_duplicates()
         data_to_save = [rec.to_dict() for rec in self.recordings]
         await self.services.config_manager.save_recordings_config(data_to_save)
 
-    async def _resolve_platform_user_id(self, url: str, platform_key: str) -> str | None:
+    async def _resolve_platform_user_id(self, url: str, platform_key: str, streamer_name: str) -> str | None:
         if platform_key == "kuaishou":
             path = urlsplit(url).path.strip("/").split("/")
             return path[1] if len(path) == 2 and path[0] == "u" else None
@@ -129,8 +132,8 @@ class RecordingManager:
         proxy = None
         if self.settings.user_config.get("enable_proxy"):
             proxy = self.services.proxy_manager.get_status_check_proxy()
-        live_stream = DouyinLiveStream(proxy_addr=proxy, cookies=self.settings.cookies_config.get(platform_key))
         try:
+            live_stream = DouyinLiveStream(proxy_addr=proxy, cookies=self.settings.cookies_config.get(platform_key))
             async with self.platform_semaphores[platform_key], asyncio.timeout(30):
                 profile_url = url
                 if "www.douyin.com/user/" not in url:
@@ -143,15 +146,35 @@ class RecordingManager:
                     if owner.get("unique_id"):
                         return str(owner["unique_id"])
                     if not owner.get("sec_uid"):
+                        logger.warning(
+                            "Unable to resolve {} user ID: url={!r}, username={!r}, reason=missing unique_id/sec_uid",
+                            platform_key,
+                            url,
+                            streamer_name,
+                        )
                         return None
                     profile_url = "https://www.douyin.com/user/" + owner["sec_uid"]
                 # unique_id is the public Douyin number; id/id_str are internal user IDs.
                 user_id = await DouyinUtils.get_unique_id(
                     profile_url, proxy_addr=proxy, headers=live_stream.mobile_headers.copy()
                 )
-                return str(user_id) if user_id else None
+                if user_id:
+                    return str(user_id)
+                logger.warning(
+                    "Unable to resolve {} user ID: url={!r}, username={!r}, reason=empty unique_id",
+                    platform_key,
+                    url,
+                    streamer_name,
+                )
+                return None
         except Exception as exc:
-            logger.warning(f"Unable to resolve {platform_key} user ID: {type(exc).__name__}")
+            logger.warning(
+                "Unable to resolve {} user ID: url={!r}, username={!r}, error={}",
+                platform_key,
+                url,
+                streamer_name,
+                type(exc).__name__,
+            )
             return None
 
     async def resolve_recording_identities(self, recordings_info: list[dict]):
@@ -159,47 +182,43 @@ class RecordingManager:
         existing = [rec for rec in self.recordings if get_platform_info(rec.url)[1] in platforms]
         known_ids = {rec.url: rec.platform_user_id for rec in existing if rec.platform_user_id}
         pending = {
-            rec.url: get_platform_info(rec.url)[1]
+            rec.url: (get_platform_info(rec.url)[1], rec.streamer_name)
             for rec in existing
             if not rec.platform_user_id and rec.url not in known_ids
         }
-        for info in recordings_info:
-            platform_key = get_platform_info(info["url"])[1]
-            info["platform_key"] = platform_key
-            info["platform_user_id"] = known_ids.get(info["url"])
-            if platform_key in platforms and not info["platform_user_id"]:
-                pending[info["url"]] = platform_key
-
         resolved = await asyncio.gather(
-            *(self._resolve_platform_user_id(url, platform) for url, platform in pending.items())
+            *(self._resolve_platform_user_id(url, platform, name) for url, (platform, name) in pending.items())
         )
         known_ids.update(zip(pending, resolved))
         changed = False
-        for rec in existing:
+        for rec in self.recordings:
             if not rec.platform_user_id and known_ids.get(rec.url):
                 rec.platform_user_id = known_ids[rec.url]
                 changed = True
         if changed:
             await self.persist_recordings()
-        for info in recordings_info:
-            info["platform_user_id"] = known_ids.get(info["url"])
 
-    def find_recording_duplicates(self, recording_info: dict, additional: list[dict] | None = None) -> list[dict]:
-        platform_key = get_platform_info(recording_info["url"])[1]
-        user_id = recording_info.get("platform_user_id")
-        duplicates = []
-        for candidate in [rec.to_dict() for rec in self.recordings] + (additional or []):
-            if recording_info.get("rec_id") and candidate.get("rec_id") == recording_info["rec_id"]:
-                continue
-            same_user = (
-                platform_key in {"douyin", "kuaishou"}
-                and user_id
-                and user_id == candidate.get("platform_user_id")
-                and platform_key == get_platform_info(candidate["url"])[1]
-            )
-            if same_user or recording_info["url"] == candidate["url"]:
-                duplicates.append(candidate)
-        return duplicates
+    def refresh_recording_duplicates(self):
+        by_url = defaultdict(list)
+        by_user = defaultdict(list)
+        for recording in self.recordings:
+            by_url[recording.url].append(recording)
+            platform_key = get_platform_info(recording.url)[1]
+            if platform_key in {"douyin", "kuaishou"} and recording.platform_user_id:
+                by_user[(platform_key, recording.platform_user_id)].append(recording)
+
+        for recording in self.recordings:
+            platform_key = get_platform_info(recording.url)[1]
+            candidates = by_url[recording.url] + by_user.get((platform_key, recording.platform_user_id), [])
+            duplicates = {
+                candidate.rec_id: candidate.streamer_name or candidate.url
+                for candidate in candidates
+                if candidate.rec_id != recording.rec_id
+            }
+            names = list(duplicates.values())
+            if names != recording.duplicate_names:
+                recording.duplicate_names = names
+                self.services.broadcast_card_update(recording)
 
     async def update_recording_card(self, recording: Recording, updated_info: dict):
         """Update an existing recording object and persist changes to a JSON file."""
@@ -214,7 +233,9 @@ class RecordingManager:
                 if "platform_user_id" not in updated_info:
                     updated_info["platform_user_id"] = None
             recording.update(updated_info)
-            self.services.run_coro(self.persist_recordings())
+            await self.persist_recordings()
+            if not recording.platform_user_id:
+                self.services.run_coro(self.resolve_recording_identities([recording.to_dict()]))
 
     @staticmethod
     async def _update_recording(
@@ -425,11 +446,14 @@ class RecordingManager:
                 return
 
         recording.status_info = RecordingStatus.STATUS_CHECKING
-        query_live_url = recording.live_url or recording.url
+        recording_url = recording.url
+        query_live_url = recording.live_url or recording_url
         platform, platform_key = get_platform_info(query_live_url)
 
         if platform_key == "kuaishou" and not recording.platform_user_id:
-            recording.platform_user_id = await self._resolve_platform_user_id(query_live_url, platform_key)
+            recording.platform_user_id = await self._resolve_platform_user_id(
+                query_live_url, platform_key, recording.streamer_name
+            )
             if recording.platform_user_id:
                 await self.persist_recordings()
 
@@ -467,8 +491,8 @@ class RecordingManager:
         if platform_key == "douyin" and not recording.platform_user_id:
             user_id = (stream_info.extra or {}).get("platform_user_id") if stream_info else None
             if not user_id:
-                user_id = await self._resolve_platform_user_id(query_live_url, platform_key)
-            if user_id:
+                user_id = await self._resolve_platform_user_id(query_live_url, platform_key, recording.streamer_name)
+            if user_id and recording.url == recording_url:
                 recording.platform_user_id = user_id
                 await self.persist_recordings()
         if stream_info and getattr(stream_info, "live_url", None) and recording.live_url != stream_info.live_url:

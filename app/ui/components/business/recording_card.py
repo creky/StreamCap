@@ -92,6 +92,7 @@ class RecordingCardManager:
         display_title_label = ft.Text(
             display_title,
             size=14,
+            color=RecordingCardState.get_title_color(recording),
             selectable=True,
             max_lines=1,
             no_wrap=True,
@@ -131,8 +132,27 @@ class RecordingCardManager:
             visible=bool(recording.account_status),
         )
 
+        duplicate_text = self._["duplicate_recording"].format(names="、".join(recording.duplicate_names))
+        duplicate_label = ft.Container(
+            content=ft.Text(
+                duplicate_text,
+                color=ft.Colors.WHITE,
+                size=12,
+                weight=ft.FontWeight.BOLD,
+                max_lines=1,
+                no_wrap=True,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            ),
+            bgcolor=ft.Colors.DEEP_ORANGE,
+            border_radius=5,
+            padding=5,
+            width=160,
+            height=26,
+            tooltip=duplicate_text,
+            visible=bool(recording.duplicate_names),
+        )
         title_row = ft.Row(
-            [display_title_label, account_status_label] + ([status_label] if status_label else []),
+            [display_title_label, account_status_label, duplicate_label] + ([status_label] if status_label else []),
             alignment=ft.MainAxisAlignment.START,
             spacing=6,
             tight=True,
@@ -182,6 +202,7 @@ class RecordingCardManager:
             "monitor_button": monitor_button,
             "status_label": status_label,
             "account_status_label": account_status_label,
+            "duplicate_label": duplicate_label,
         }
 
     def get_card_background_color(self, recording: Recording):
@@ -237,11 +258,16 @@ class RecordingCardManager:
         account_status_label = recording_card["account_status_label"]
         account_status_label.content.value = self._.get(recording.account_status, "")
         account_status_label.visible = bool(recording.account_status)
+        duplicate_label = recording_card["duplicate_label"]
+        duplicate_text = self._["duplicate_recording"].format(names="、".join(recording.duplicate_names))
+        duplicate_label.content.value = duplicate_text
+        duplicate_label.tooltip = duplicate_text
+        duplicate_label.visible = bool(recording.duplicate_names)
 
         status_label = recording_card.get("status_label")
         if not status_config:
-            if status_label and len(title_row.controls) > 1:
-                title_row.controls.pop()
+            if status_label:
+                title_row.controls.remove(status_label)
             recording_card["status_label"] = None
             return
 
@@ -266,6 +292,7 @@ class RecordingCardManager:
                 display_title = RecordingCardState.get_display_title(recording, self._)
                 if recording_card.get("display_title_label"):
                     recording_card["display_title_label"].value = display_title
+                    recording_card["display_title_label"].color = RecordingCardState.get_title_color(recording)
                     recording_card["display_title_label"].weight = RecordingCardState.get_title_weight(recording)
 
                 self.sync_status_label(recording_card, recording)

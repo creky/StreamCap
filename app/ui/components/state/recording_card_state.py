@@ -87,6 +87,12 @@ class RecordingCardState:
         return f"{status_prefix}{recording.title}"
 
     @staticmethod
+    def get_title_color(recording: Recording):
+        if recording.account_status == "user_deleted" or recording.streamer_name.strip() == "账号已注销":
+            return ft.Colors.RED
+        return None
+
+    @staticmethod
     def get_title_weight(recording: Recording) -> ft.FontWeight:
         return ft.FontWeight.BOLD if recording.is_recording or recording.is_live or recording.is_checking else None
 

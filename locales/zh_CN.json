@@ -107,11 +107,7 @@
     "minute_label_text": "分",
     "select_media_type": "选择媒体类型",
     "video": "视频",
-    "audio": "音频",
-    "duplicate_url_title": "重复的直播条目",
-    "duplicate_url_content": "已存在以下条目：\n{names}\n\n是否仍然保存此条目？",
-    "duplicate_batch_title": "已跳过重复条目",
-    "duplicate_batch_item": "{url}\n已存在：\n{names}"
+    "audio": "音频"
   },
   "search_dialog": {
     "search_keyword": "输入搜索关键词"
@@ -146,6 +142,7 @@
     "no_ffmpeg_tip": "未安装FFmpeg，请先安装FFmpeg ⚠️"
   },
   "recording_card": {
+    "duplicate_recording": "与「{names}」重复",
     "stop_monitor_tip": "提示：已停止直播监控👁️",
     "start_monitor_tip": "提示：已开启直播监控👁️",
     "please_stop_monitor_tip": "提示：请先停止直播监控👁️‍🗨️",
