@@ -5,14 +5,12 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
-from streamget import DouyinLiveStream
-from streamget.platforms.douyin.utils import DouyinUtils
-
 from ...messages import desktop_notify, message_pusher
 from ...models.recording.recording_model import Recording
 from ...models.recording.recording_status_model import RecordingStatus
 from ...utils import utils
 from ...utils.logger import logger
+from ..platforms.douyin import DouyinLiveStream
 from ..platforms.platform_handlers import get_platform_info
 from ..runtime.process_manager import BackgroundService
 from .stream_manager import LiveStreamRecorder
@@ -139,47 +137,29 @@ class RecordingManager:
         if pending is not None:
             return await asyncio.shield(pending)
         if loop.time() < self.identity_retry_after.get(url, 0):
+            logger.debug(
+                "Douyin unique_id lookup deferred: retry_in_seconds={}",
+                int(self.identity_retry_after[url] - loop.time()),
+            )
             return None
         pending = loop.create_future()
         self.identity_requests[url] = pending
         user_id = None
         proxy = None
+        log_url = urlsplit(url)._replace(query="", fragment="").geturl()
         try:
             if self.settings.user_config.get("enable_proxy"):
                 proxy = self.services.proxy_manager.get_status_check_proxy()
             live_stream = DouyinLiveStream(proxy_addr=proxy, cookies=self.settings.cookies_config.get(platform_key))
-            async with self.identity_semaphore, asyncio.timeout(30):
-                profile_url = url
-                if "www.douyin.com/user/" not in url:
-                    if "v.douyin.com" in url:
-                        data = await live_stream.fetch_app_stream_data(url, process_data=False)
-                    else:
-                        data = await live_stream.fetch_web_stream_data(url, process_data=False)
-                    payload = data.get("data") or {}
-                    owner = data.get("owner") or (payload.get("room") or {}).get("owner") or payload.get("user") or {}
-                    if owner.get("unique_id"):
-                        user_id = str(owner["unique_id"])
-                        return user_id
-                    if not owner.get("sec_uid"):
-                        logger.warning(
-                            "Unable to resolve {} user ID: url={!r}, username={!r}, reason=missing unique_id/sec_uid",
-                            platform_key,
-                            url,
-                            streamer_name,
-                        )
-                        return None
-                    profile_url = "https://www.douyin.com/user/" + owner["sec_uid"]
-                # unique_id is the public Douyin number; id/id_str are internal user IDs.
-                user_id = await DouyinUtils.get_unique_id(
-                    profile_url, proxy_addr=proxy, headers=live_stream.mobile_headers.copy()
-                )
+            async with self.identity_semaphore, asyncio.timeout(90):
+                user_id = await live_stream.get_unique_id(url)
                 if user_id:
                     user_id = str(user_id)
                     return user_id
                 logger.warning(
                     "Unable to resolve {} user ID: url={!r}, username={!r}, reason=empty unique_id",
                     platform_key,
-                    url,
+                    log_url,
                     streamer_name,
                 )
                 return None
@@ -187,7 +167,7 @@ class RecordingManager:
             logger.warning(
                 "Unable to resolve {} user ID: url={!r}, username={!r}, error={}, detail={}",
                 platform_key,
-                url,
+                log_url,
                 streamer_name,
                 type(exc).__name__,
                 self._error_detail(exc),
@@ -198,6 +178,10 @@ class RecordingManager:
                 self.identity_retry_after.pop(url, None)
             else:
                 self.identity_retry_after[url] = loop.time() + 1800
+                logger.warning(
+                    "Douyin identity incomplete: url={}, retry_after_seconds=1800, recording_blocked_by_identity=false",
+                    log_url,
+                )
             self.identity_requests.pop(url, None)
             pending.set_result(user_id)
 

@@ -1,6 +1,7 @@
 import streamget
 from deprecated import deprecated
 
+from ..douyin import DouyinLiveStream
 from ..errors import trace_error_decorator
 from ..kuaishou import KuaishouLiveStream
 from .base import PlatformHandler, StreamData
@@ -39,7 +40,7 @@ class DouyinHandler(PlatformHandler):
         platform: str | None = None,
     ) -> None:
         super().__init__(proxy, cookies, record_quality, platform)
-        self.live_stream: streamget.DouyinLiveStream | None = None
+        self.live_stream: DouyinLiveStream | None = None
 
     @trace_error_decorator
     async def get_stream_info(self, live_url: str) -> StreamData:
@@ -47,7 +48,7 @@ class DouyinHandler(PlatformHandler):
         Fetch stream information for a Douyin live URL.
         """
         if not self.live_stream:
-            self.live_stream = streamget.DouyinLiveStream(proxy_addr=self.proxy, cookies=self.cookies)
+            self.live_stream = DouyinLiveStream(proxy_addr=self.proxy, cookies=self.cookies)
         else:
             self.live_stream.proxy_addr = self.proxy
             self.live_stream.cookies = self.cookies
