@@ -31,6 +31,7 @@ class RecordingsPage(PageBase):
         self.load_language()
         self.current_filter = "all"
         self.current_platform_filter = "all"
+        self.search_result_ids = None
         self.platform_buttons = {}
         self.status_filter_buttons = {}
         self.init()
@@ -396,6 +397,7 @@ class RecordingsPage(PageBase):
         await self.apply_filter()
 
     async def apply_filter(self):
+        self.search_result_ids = None
         self._refresh_filter_area()
 
         cards_obj = self.app.record_card_manager.cards_obj
@@ -442,6 +444,7 @@ class RecordingsPage(PageBase):
                 for rec in recordings
                 if lower_query in str(rec.to_dict()).lower() or lower_query in rec.display_title
             }
+            self.search_result_ids = search_ids
 
             filtered_ids = set()
 

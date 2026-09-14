@@ -1,6 +1,10 @@
+import asyncio
+
 import streamget
 from deprecated import deprecated
+from streamget.platforms.douyin.live_stream import DouyinIdentityError
 
+from ....utils.logger import logger
 from ..douyin import DouyinLiveStream
 from ..errors import trace_error_decorator
 from ..kuaishou import KuaishouLiveStream
@@ -40,7 +44,7 @@ class DouyinHandler(PlatformHandler):
         platform: str | None = None,
     ) -> None:
         super().__init__(proxy, cookies, record_quality, platform)
-        self.live_stream: DouyinLiveStream | None = None
+        self.live_stream: streamget.DouyinLiveStream | None = None
 
     @trace_error_decorator
     async def get_stream_info(self, live_url: str) -> StreamData:
@@ -48,7 +52,7 @@ class DouyinHandler(PlatformHandler):
         Fetch stream information for a Douyin live URL.
         """
         if not self.live_stream:
-            self.live_stream = DouyinLiveStream(proxy_addr=self.proxy, cookies=self.cookies)
+            self.live_stream = streamget.DouyinLiveStream(proxy_addr=self.proxy, cookies=self.cookies)
         else:
             self.live_stream.proxy_addr = self.proxy
             self.live_stream.cookies = self.cookies
@@ -56,7 +60,18 @@ class DouyinHandler(PlatformHandler):
             self.live_stream.pc_headers = self.live_stream._get_pc_headers()
 
         if "v.douyin.com" in live_url or "www.douyin.com/user" in live_url:
-            json_data = await self.live_stream.fetch_app_stream_data(url=live_url)
+            try:
+                json_data = await self.live_stream.fetch_app_stream_data(url=live_url)
+            except DouyinIdentityError:
+                logger.warning("Douyin stream fallback start: reason=unique_id_unavailable, timeout_seconds=30")
+                fallback = DouyinLiveStream(proxy_addr=self.proxy, cookies=self.cookies)
+                try:
+                    async with asyncio.timeout(30):
+                        json_data = await fallback.fetch_app_stream_data(url=live_url)
+                except Exception as exc:
+                    logger.warning("Douyin stream fallback failed: error={}", type(exc).__name__)
+                    raise
+                logger.info("Douyin stream fallback succeeded: room_available=true")
         else:
             json_data = await self.live_stream.fetch_web_stream_data(url=live_url)
         stream_info = await self.live_stream.fetch_stream_url(json_data, self.record_quality)

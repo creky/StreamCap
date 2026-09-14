@@ -7,6 +7,7 @@ from ....models.recording.recording_model import Recording
 from ....models.recording.recording_status_model import RecordingStatus
 from ....utils import utils
 from ....utils.logger import logger
+from ...filters import RecordingFilters
 from ...views.storage_view import StoragePage
 from ..dialogs.card_dialog import CardDialog
 from ..state.recording_card_state import RecordingCardState
@@ -283,7 +284,7 @@ class RecordingCardManager:
         status_label.bgcolor = status_config["bgcolor"]
 
     async def update_card(self, recording):
-        """Update the recording card and status filter counts."""
+        """Update the recording card, filter visibility and status counts."""
         if recording.rec_id in self.cards_obj:
             try:
                 self.app.recordings.refresh_status_counts()
@@ -314,7 +315,18 @@ class RecordingCardManager:
                 if recording_card["card"] and recording_card["card"].content:
                     recording_card["card"].content.bgcolor = self.get_card_background_color(recording)
                     recording_card["card"].content.border = ft.Border.all(2, self.get_card_border_color(recording))
-                    if not self.safe_update(recording_card["card"], "Update card failed"):
+                    recordings_page = self.app.recordings
+                    visible = RecordingFilters.should_show_recording(
+                        recordings_page.current_filter, recordings_page.current_platform_filter, recording
+                    )
+                    if recordings_page.search_result_ids is not None:
+                        visible = visible and recording.rec_id in recordings_page.search_result_ids
+                    visibility_changed = recording_card["card"].visible != visible
+                    recording_card["card"].visible = visible
+                    update_target = recording_card["card"]
+                    if visibility_changed and self.app.current_page == recordings_page:
+                        update_target = recordings_page.recording_card_area
+                    if not self.safe_update(update_target, "Update card failed"):
                         return
 
             except (ft.FletPageDisconnectedException, AssertionError) as e:

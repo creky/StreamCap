@@ -302,7 +302,7 @@ class DouyinLiveStream(BaseDouyinLiveStream):
 
             async def run():
                 try:
-                    async with asyncio.timeout(60):
+                    async with asyncio.timeout(30):
                         return await self._resolve(url)
                 except Exception:
                     state["requests"].pop(key, None)
