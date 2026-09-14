@@ -1,4 +1,5 @@
 import asyncio
+import re
 import threading
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -36,6 +37,10 @@ class RecordingManager:
         self.refresh_recording_duplicates()
         max_concurrent = int(self.settings.user_config.get("platform_max_concurrent_requests", 3))
         self.platform_semaphores = defaultdict(lambda: asyncio.Semaphore(max_concurrent))
+        self.identity_semaphore = asyncio.Semaphore(1)
+        self.identity_requests = {}
+        self.identity_retry_after = {}
+        self.active_checks = set()
         self.active_recorders = {}
         self.active_runtime_tasks = set()
 
@@ -129,12 +134,21 @@ class RecordingManager:
         if platform_key != "douyin":
             return None
 
+        loop = asyncio.get_running_loop()
+        pending = self.identity_requests.get(url)
+        if pending is not None:
+            return await asyncio.shield(pending)
+        if loop.time() < self.identity_retry_after.get(url, 0):
+            return None
+        pending = loop.create_future()
+        self.identity_requests[url] = pending
+        user_id = None
         proxy = None
-        if self.settings.user_config.get("enable_proxy"):
-            proxy = self.services.proxy_manager.get_status_check_proxy()
         try:
+            if self.settings.user_config.get("enable_proxy"):
+                proxy = self.services.proxy_manager.get_status_check_proxy()
             live_stream = DouyinLiveStream(proxy_addr=proxy, cookies=self.settings.cookies_config.get(platform_key))
-            async with self.platform_semaphores[platform_key], asyncio.timeout(30):
+            async with self.identity_semaphore, asyncio.timeout(30):
                 profile_url = url
                 if "www.douyin.com/user/" not in url:
                     if "v.douyin.com" in url:
@@ -144,7 +158,8 @@ class RecordingManager:
                     payload = data.get("data") or {}
                     owner = data.get("owner") or (payload.get("room") or {}).get("owner") or payload.get("user") or {}
                     if owner.get("unique_id"):
-                        return str(owner["unique_id"])
+                        user_id = str(owner["unique_id"])
+                        return user_id
                     if not owner.get("sec_uid"):
                         logger.warning(
                             "Unable to resolve {} user ID: url={!r}, username={!r}, reason=missing unique_id/sec_uid",
@@ -159,7 +174,8 @@ class RecordingManager:
                     profile_url, proxy_addr=proxy, headers=live_stream.mobile_headers.copy()
                 )
                 if user_id:
-                    return str(user_id)
+                    user_id = str(user_id)
+                    return user_id
                 logger.warning(
                     "Unable to resolve {} user ID: url={!r}, username={!r}, reason=empty unique_id",
                     platform_key,
@@ -169,22 +185,48 @@ class RecordingManager:
                 return None
         except Exception as exc:
             logger.warning(
-                "Unable to resolve {} user ID: url={!r}, username={!r}, error={}",
+                "Unable to resolve {} user ID: url={!r}, username={!r}, error={}, detail={}",
                 platform_key,
                 url,
                 streamer_name,
                 type(exc).__name__,
+                self._error_detail(exc),
             )
             return None
+        finally:
+            if user_id:
+                self.identity_retry_after.pop(url, None)
+            else:
+                self.identity_retry_after[url] = loop.time() + 1800
+            self.identity_requests.pop(url, None)
+            pending.set_result(user_id)
+
+    def _error_detail(self, exc: Exception) -> str:
+        detail = str(exc)
+        for cookie in self.settings.cookies_config.values():
+            if cookie:
+                detail = detail.replace(cookie, "<redacted>")
+        detail = re.sub(r"https?://[^\s<>\"']+", "<url>", detail)
+        detail = re.sub(
+            r"(?i)\b(cookie|authorization|[\w-]*token|[\w-]*secret|password|signature|api[_-]?key)\b[\"']?\s*[:=].*",
+            r"\1=<redacted>",
+            detail,
+        )
+        return " ".join(detail.split())[:500]
 
     async def resolve_recording_identities(self, recordings_info: list[dict]):
-        platforms = {get_platform_info(info["url"])[1] for info in recordings_info} & {"douyin", "kuaishou"}
-        existing = [rec for rec in self.recordings if get_platform_info(rec.url)[1] in platforms]
+        backend_loop = self.services.backend_loop
+        if backend_loop is not None and backend_loop is not asyncio.get_running_loop():
+            return await asyncio.wrap_future(self.services.run_coro(self.resolve_recording_identities(recordings_info)))
+        urls = {info["url"] for info in recordings_info}
+        existing = [rec for rec in self.recordings if rec.url in urls]
         known_ids = {rec.url: rec.platform_user_id for rec in existing if rec.platform_user_id}
         pending = {
             rec.url: (get_platform_info(rec.url)[1], rec.streamer_name)
             for rec in existing
-            if not rec.platform_user_id and rec.url not in known_ids
+            if not rec.platform_user_id
+            and rec.url not in known_ids
+            and get_platform_info(rec.url)[1] in {"douyin", "kuaishou"}
         }
         resolved = await asyncio.gather(
             *(self._resolve_platform_user_id(url, platform, name) for url, (platform, name) in pending.items())
@@ -402,204 +444,227 @@ class RecordingManager:
     async def check_if_live(self, recording: Recording):
         """Check if the live stream is available, fetch stream data and update is_live status."""
 
-        recording.manually_stopped = False
-        if recording.is_recording or recording.stopping_in_progress:
-            logger.debug(f"Skip check_if_live because recording is busy: {recording.url}")
+        backend_loop = self.services.backend_loop
+        if backend_loop is not None and backend_loop is not asyncio.get_running_loop():
+            return await asyncio.wrap_future(self.services.run_coro(self.check_if_live(recording)))
+        if recording.rec_id in self.active_checks:
             return
+        self.active_checks.add(recording.rec_id)
+        try:
+            recording.manually_stopped = False
+            if recording.is_recording or recording.stopping_in_progress:
+                logger.debug(f"Skip check_if_live because recording is busy: {recording.url}")
+                return
 
-        if recording.rec_id in self.active_recorders:
-            logger.debug(f"Skip check_if_live because recorder is active: {recording.url}")
-            return
+            if recording.rec_id in self.active_recorders:
+                logger.debug(f"Skip check_if_live because recorder is active: {recording.url}")
+                return
 
-        if not recording.monitor_status:
-            recording.display_title = f"[{self._['monitor_stopped']}] {recording.title}"
-            recording.status_info = RecordingStatus.STOPPED_MONITORING
-            recording.is_checking = False
-            self.services.broadcast_card_update(recording)
-            return
-
-        recording.detection_time = datetime.now().time()
-        recording.is_checking = True
-
-        if not recording.showed_checking_status:
-            recording.status_info = RecordingStatus.STATUS_CHECKING
-            recording.showed_checking_status = True
-            self.services.broadcast_card_update(recording)
-
-        if recording.scheduled_recording:
-            scheduled_time_range_list = await self.get_scheduled_time_range(
-                recording.scheduled_start_time, recording.monitor_hours
-            )
-            recording.scheduled_time_range = scheduled_time_range_list
-            in_scheduled = False
-            for scheduled_time_range in scheduled_time_range_list or []:
-                in_scheduled = utils.is_current_time_within_range(scheduled_time_range)
-                if in_scheduled:
-                    break
-
-            if not in_scheduled:
-                recording.status_info = RecordingStatus.NOT_IN_SCHEDULED_CHECK
-                recording.is_live = False
+            if not recording.monitor_status:
+                recording.display_title = f"[{self._['monitor_stopped']}] {recording.title}"
+                recording.status_info = RecordingStatus.STOPPED_MONITORING
                 recording.is_checking = False
-                logger.info(f"Skip Detection: {recording.url} not in scheduled check range {scheduled_time_range_list}")
                 self.services.broadcast_card_update(recording)
                 return
 
-        recording.status_info = RecordingStatus.STATUS_CHECKING
-        recording_url = recording.url
-        query_live_url = recording.live_url or recording_url
-        platform, platform_key = get_platform_info(query_live_url)
+            recording.detection_time = datetime.now().time()
+            recording.is_checking = True
 
-        if platform_key == "kuaishou" and not recording.platform_user_id:
-            recording.platform_user_id = await self._resolve_platform_user_id(
-                query_live_url, platform_key, recording.streamer_name
-            )
-            if recording.platform_user_id:
-                await self.persist_recordings()
+            if not recording.showed_checking_status:
+                recording.status_info = RecordingStatus.STATUS_CHECKING
+                recording.showed_checking_status = True
+                self.services.broadcast_card_update(recording)
 
-        if platform and platform_key and (recording.platform is None or recording.platform_key is None):
-            recording.platform = platform
-            recording.platform_key = platform_key
-            self.services.run_coro(self.persist_recordings())
-
-        if self.settings.user_config.get("language") != "zh_CN":
-            platform = platform_key
-
-        output_dir = self.settings.get_video_save_path()
-        await self.check_free_space(output_dir)
-        if not self.services.recording_enabled:
-            recording.is_checking = False
-            recording.status_info = RecordingStatus.NOT_RECORDING_SPACE
-            return
-        recording_info = {
-            "platform": platform,
-            "platform_key": platform_key,
-            "live_url": query_live_url,
-            "output_dir": output_dir,
-            "segment_record": recording.segment_record,
-            "segment_time": recording.segment_time,
-            "save_format": recording.record_format,
-            "quality": recording.quality,
-            "video_bitrate": recording.video_bitrate,
-        }
-
-        semaphore = self.platform_semaphores[platform_key]
-        recorder = LiveStreamRecorder(self.services, recording, recording_info)
-        async with semaphore:
-            stream_info = await recorder.fetch_stream()
-            logger.info(f"Stream Data: {stream_info}")
-        if platform_key == "douyin" and not recording.platform_user_id:
-            user_id = (stream_info.extra or {}).get("platform_user_id") if stream_info else None
-            if not user_id:
-                user_id = await self._resolve_platform_user_id(query_live_url, platform_key, recording.streamer_name)
-            if user_id and recording.url == recording_url:
-                recording.platform_user_id = user_id
-                await self.persist_recordings()
-        if stream_info and getattr(stream_info, "live_url", None) and recording.live_url != stream_info.live_url:
-            recording.live_url = stream_info.live_url
-            self.services.run_coro(self.persist_recordings())
-        if not stream_info or not stream_info.anchor_name:
-            account_status = (stream_info.extra or {}).get("account_status") if stream_info else None
-            if account_status:
-                recording.account_status = account_status
-                recording.is_live = False
-                recording.is_checking = False
-                recording.status_info = (
-                    RecordingStatus.MONITORING if recording.monitor_status else RecordingStatus.STOPPED_MONITORING
+            if recording.scheduled_recording:
+                scheduled_time_range_list = await self.get_scheduled_time_range(
+                    recording.scheduled_start_time, recording.monitor_hours
                 )
-                self.services.run_coro(self.persist_recordings())
-                self.services.broadcast_card_update(recording)
-                self.services.broadcast_pubsub("update", recording)
-                return
-            logger.error(f"Fetch stream data failed: {recording.url}")
-            recording.is_checking = False
-            recording.status_info = RecordingStatus.LIVE_STATUS_CHECK_ERROR
-            if recording.monitor_status:
-                self.services.broadcast_card_update(recording)
-                self.services.broadcast_pubsub("update", recording)
-            return
-        if recording.account_status:
-            recording.account_status = None
-            self.services.run_coro(self.persist_recordings())
-        if self.settings.user_config.get("remove_emojis"):
-            stream_info.anchor_name = utils.clean_name(stream_info.anchor_name, self._["live_room"])
+                recording.scheduled_time_range = scheduled_time_range_list
+                in_scheduled = False
+                for scheduled_time_range in scheduled_time_range_list or []:
+                    in_scheduled = utils.is_current_time_within_range(scheduled_time_range)
+                    if in_scheduled:
+                        break
 
-        anchor_name = stream_info.anchor_name.strip()
-        if anchor_name and anchor_name != recording.streamer_name:
-            recording.streamer_name = anchor_name
-            recording.update_title(self._[recording.quality])
-            await self.persist_recordings()
-
-        if stream_info.is_live:
-            recording.live_title = stream_info.title
-            recording.title = f"{recording.streamer_name} - {self._[recording.quality]}"
-            recording.display_title = f"[{self._['is_live']}] {recording.title}"
-
-            if not recording.is_live:
-                recording.is_live = stream_info.is_live
-                recording.notified_live_start = False
-                recording.notified_live_end = False
-
-                tray_icon_path = self.services.tray_manager.icon_path if self.services.tray_manager is not None else ""
-                if desktop_notify.should_push_notification(self.app):
-                    desktop_notify.send_notification(
-                        title=self._["notify"],
-                        message=recording.streamer_name + " | " + self._["live_recording_started_message"],
-                        app_icon=tray_icon_path,
+                if not in_scheduled:
+                    recording.status_info = RecordingStatus.NOT_IN_SCHEDULED_CHECK
+                    recording.is_live = False
+                    recording.is_checking = False
+                    logger.info(
+                        f"Skip Detection: {recording.url} not in scheduled check range {scheduled_time_range_list}"
                     )
+                    self.services.broadcast_card_update(recording)
+                    return
 
-            msg_manager = message_pusher.MessagePusher(self.settings)
-            user_config = self.settings.user_config
-            if (
-                msg_manager.should_push_message(self.settings, recording, message_type="start")
-                and not recording.notified_live_start
-            ):
-                push_content = self._["push_content"]
-                begin_push_message_text = user_config.get("custom_stream_start_content")
-                if begin_push_message_text:
-                    push_content = begin_push_message_text
+            recording.status_info = RecordingStatus.STATUS_CHECKING
+            recording_url = recording.url
+            query_live_url = recording.live_url or recording_url
+            platform, platform_key = get_platform_info(query_live_url)
 
-                push_at = datetime.today().strftime("%Y-%m-%d %H:%M:%S")
-                push_content = (
-                    push_content.replace("[room_name]", recording.streamer_name)
-                    .replace("[time]", push_at)
-                    .replace("[title]", recording.live_title or "None")
+            if platform_key == "kuaishou" and not recording.platform_user_id:
+                recording.platform_user_id = await self._resolve_platform_user_id(
+                    query_live_url, platform_key, recording.streamer_name
                 )
-                msg_title = user_config.get("custom_notification_title").strip()
-                msg_title = msg_title or self._["status_notify"]
+                if recording.platform_user_id:
+                    await self.persist_recordings()
 
-                BackgroundService.get_instance().add_task(msg_manager.push_messages_sync, msg_title, push_content)
-                recording.notified_live_start = True
+            if platform and platform_key and (recording.platform is None or recording.platform_key is None):
+                recording.platform = platform
+                recording.platform_key = platform_key
+                self.services.run_coro(self.persist_recordings())
 
-            if not recording.only_notify_no_record:
-                recording.status_info = RecordingStatus.PREPARING_RECORDING
-                recording.loop_time_seconds = self.loop_time_seconds
-                self.start_update(recording)
-                self.services.run_coro(recorder.start_recording(stream_info))
-            else:
-                if recording.notified_live_start:
-                    notify_loop_time = user_config.get("notify_loop_time")
-                    recording.loop_time_seconds = int(notify_loop_time or 600)
-                else:
+            if self.settings.user_config.get("language") != "zh_CN":
+                platform = platform_key
+
+            output_dir = self.settings.get_video_save_path()
+            await self.check_free_space(output_dir)
+            if not self.services.recording_enabled:
+                recording.is_checking = False
+                recording.status_info = RecordingStatus.NOT_RECORDING_SPACE
+                return
+            recording_info = {
+                "platform": platform,
+                "platform_key": platform_key,
+                "live_url": query_live_url,
+                "output_dir": output_dir,
+                "segment_record": recording.segment_record,
+                "segment_time": recording.segment_time,
+                "save_format": recording.record_format,
+                "quality": recording.quality,
+                "video_bitrate": recording.video_bitrate,
+            }
+
+            semaphore = self.platform_semaphores[platform_key]
+            recorder = LiveStreamRecorder(self.services, recording, recording_info)
+            async with semaphore:
+                stream_info = await recorder.fetch_stream()
+                logger.info(f"Stream Data: {stream_info}")
+            if platform_key == "douyin" and not recording.platform_user_id:
+                user_id = (stream_info.extra or {}).get("platform_user_id") if stream_info else None
+                if user_id and recording.url == recording_url:
+                    recording.platform_user_id = user_id
+                    await self.persist_recordings()
+                elif stream_info and stream_info.anchor_name and recording.url == recording_url:
+                    self.services.run_coro(self.resolve_recording_identities([recording.to_dict()]))
+            if stream_info and getattr(stream_info, "live_url", None) and recording.live_url != stream_info.live_url:
+                recording.live_url = stream_info.live_url
+                self.services.run_coro(self.persist_recordings())
+            if not stream_info or not stream_info.anchor_name:
+                account_status = (stream_info.extra or {}).get("account_status") if stream_info else None
+                if account_status:
+                    recording.account_status = account_status
+                    recording.is_live = False
+                    recording.is_checking = False
+                    recording.status_info = (
+                        RecordingStatus.MONITORING if recording.monitor_status else RecordingStatus.STOPPED_MONITORING
+                    )
+                    self.services.run_coro(self.persist_recordings())
+                    self.services.broadcast_card_update(recording)
+                    self.services.broadcast_pubsub("update", recording)
+                    return
+                logger.error(f"Fetch stream data failed: {recording.url}")
+                recording.is_checking = False
+                recording.status_info = RecordingStatus.LIVE_STATUS_CHECK_ERROR
+                if recording.monitor_status:
+                    self.services.broadcast_card_update(recording)
+                    self.services.broadcast_pubsub("update", recording)
+                return
+            if recording.account_status:
+                recording.account_status = None
+                self.services.run_coro(self.persist_recordings())
+            if self.settings.user_config.get("remove_emojis"):
+                stream_info.anchor_name = utils.clean_name(stream_info.anchor_name, self._["live_room"])
+
+            anchor_name = stream_info.anchor_name.strip()
+            if anchor_name and anchor_name != recording.streamer_name:
+                recording.streamer_name = anchor_name
+                recording.update_title(self._[recording.quality])
+                await self.persist_recordings()
+
+            if stream_info.is_live:
+                recording.live_title = stream_info.title
+                recording.title = f"{recording.streamer_name} - {self._[recording.quality]}"
+                recording.display_title = f"[{self._['is_live']}] {recording.title}"
+
+                if not recording.is_live:
+                    recording.is_live = stream_info.is_live
+                    recording.notified_live_start = False
+                    recording.notified_live_end = False
+
+                    tray_icon_path = (
+                        self.services.tray_manager.icon_path if self.services.tray_manager is not None else ""
+                    )
+                    if desktop_notify.should_push_notification(self.app):
+                        desktop_notify.send_notification(
+                            title=self._["notify"],
+                            message=recording.streamer_name + " | " + self._["live_recording_started_message"],
+                            app_icon=tray_icon_path,
+                        )
+
+                msg_manager = message_pusher.MessagePusher(self.settings)
+                user_config = self.settings.user_config
+                if (
+                    msg_manager.should_push_message(self.settings, recording, message_type="start")
+                    and not recording.notified_live_start
+                ):
+                    push_content = self._["push_content"]
+                    begin_push_message_text = user_config.get("custom_stream_start_content")
+                    if begin_push_message_text:
+                        push_content = begin_push_message_text
+
+                    push_at = datetime.today().strftime("%Y-%m-%d %H:%M:%S")
+                    push_content = (
+                        push_content.replace("[room_name]", recording.streamer_name)
+                        .replace("[time]", push_at)
+                        .replace("[title]", recording.live_title or "None")
+                    )
+                    msg_title = user_config.get("custom_notification_title").strip()
+                    msg_title = msg_title or self._["status_notify"]
+
+                    BackgroundService.get_instance().add_task(msg_manager.push_messages_sync, msg_title, push_content)
+                    recording.notified_live_start = True
+
+                if not recording.only_notify_no_record:
+                    recording.status_info = RecordingStatus.PREPARING_RECORDING
                     recording.loop_time_seconds = self.loop_time_seconds
+                    self.start_update(recording)
+                    self.services.run_coro(recorder.start_recording(stream_info))
+                else:
+                    if recording.notified_live_start:
+                        notify_loop_time = user_config.get("notify_loop_time")
+                        recording.loop_time_seconds = int(notify_loop_time or 600)
+                    else:
+                        recording.loop_time_seconds = self.loop_time_seconds
 
-                recording.cumulative_duration = timedelta()
-                recording.last_duration = timedelta()
-                recording.status_info = RecordingStatus.LIVE_BROADCASTING
+                    recording.cumulative_duration = timedelta()
+                    recording.last_duration = timedelta()
+                    recording.status_info = RecordingStatus.LIVE_BROADCASTING
 
-        else:
-            recording.is_recording = False
-            if recording.is_live:
-                recording.is_live = False
-                asyncio.create_task(recorder.end_message_push())
+            else:
+                recording.is_recording = False
+                if recording.is_live:
+                    recording.is_live = False
+                    asyncio.create_task(recorder.end_message_push())
 
-            recording.status_info = RecordingStatus.MONITORING
-            recording.display_title = recording.title
+                recording.status_info = RecordingStatus.MONITORING
+                recording.display_title = recording.title
 
-        recording.is_checking = False
-        self.services.broadcast_card_update(recording)
-        self.services.broadcast_pubsub("update", recording)
-        return
+        except Exception as exc:
+            if not recording.is_recording:
+                recording.status_info = RecordingStatus.LIVE_STATUS_CHECK_ERROR
+            logger.error(
+                "Live status check failed: username={!r}, error={}, detail={}",
+                recording.streamer_name,
+                type(exc).__name__,
+                self._error_detail(exc),
+            )
+        finally:
+            self.active_checks.discard(recording.rec_id)
+            recording.is_checking = False
+            if recording.status_info == RecordingStatus.STATUS_CHECKING:
+                recording.status_info = RecordingStatus.LIVE_STATUS_CHECK_ERROR
+            self.services.broadcast_card_update(recording)
+            self.services.broadcast_pubsub("update", recording)
 
     @staticmethod
     def start_update(recording: Recording):

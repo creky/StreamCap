@@ -2,6 +2,12 @@
 
 This document explains how to package the StreamCap desktop app with PyInstaller and how to prepare optional bundled FFmpeg / Node.js executables.
 
+## Release Verification Policy
+
+Future packaging tasks skip first-launch and isolated-startup verification. Do not launch the packaged app to verify the Flet session or home page. Startup verification is not a release requirement and does not need repeated confirmation; perform it only when the user explicitly requests it.
+
+Keep relevant static checks, embedded-source comparisons, package-content checks, and ZIP integrity verification. If a report retains a startup-check field, mark it as skipped at the user's request, never as passed.
+
 ## Requirements
 
 - Build on the target platform:
