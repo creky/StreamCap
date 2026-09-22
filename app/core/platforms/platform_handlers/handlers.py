@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 
 import streamget
 from deprecated import deprecated
@@ -117,10 +118,12 @@ class KuaishouHandler(PlatformHandler):
         self.live_stream: KuaishouLiveStream | None = None
 
     @trace_error_decorator
-    async def get_stream_info(self, live_url: str) -> StreamData:
+    async def get_stream_info(
+        self, live_url: str, on_cookies: Callable[[dict[str, str]], Awaitable[None]] | None = None
+    ) -> StreamData:
         if not self.live_stream:
             self.live_stream = KuaishouLiveStream(proxy_addr=self.proxy, cookies=self.cookies)
-        json_data = await self.live_stream.fetch_web_stream_data(url=live_url)
+        json_data = await self.live_stream.fetch_web_stream_data(url=live_url, on_cookies=on_cookies)
         return await self.live_stream.fetch_stream_url(json_data, self.record_quality)
 
 

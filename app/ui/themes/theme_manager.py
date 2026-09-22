@@ -18,13 +18,12 @@ class ThemeManager:
     def init_fonts(self):
         """Initialize fonts for the application."""
         custom_font = "AlibabaPuHuiTi Light"
+        font_file = "AlibabaPuHuiTi-2-45-Light.otf"
         if sys.platform == "darwin":
             custom_font = "AlibabaPuHuiTi Light Mac"
+            font_file = "AlibabaPuHuiTi-2-45-Light-Mac.otf"
 
-        self.page.fonts = {
-            "AlibabaPuHuiTi Light": "/fonts/AlibabaPuHuiTi-2/AlibabaPuHuiTi-2-45-Light.otf",
-            "AlibabaPuHuiTi Light Mac": "/fonts/AlibabaPuHuiTi-2/AlibabaPuHuiTi-2-45-Light-Mac.otf",
-        }
+        self.page.fonts = {custom_font: f"/fonts/AlibabaPuHuiTi-2/{font_file}"}
         self.custom_font = custom_font
 
     async def apply_initial_theme(self):

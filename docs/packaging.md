@@ -58,6 +58,10 @@ dist/StreamCap/
 
 Windows 使用 PyInstaller one-dir 结构：外层保留 `StreamCap.exe` 作为用户入口，运行依赖、资源文件和 DLL 放在 `_internal` 目录中。
 
+Windows 打包仅包含本平台使用的字体和图标，并排除未使用的 Pillow AVIF 解码模块。保留 Flet 桌面运行时和 Node.js，避免影响界面、播放和平台解析功能。
+
+内置 FFmpeg 使用 Essentials 静态版，只携带 `ffmpeg.exe` 和许可证，不再携带完整共享版的 `av*.dll`、`sw*.dll`。当前精简包使用 8.1.2，下载来源和校验值保存在 `vendor/ffmpeg/windows/source.json`；替换版本时须核对录制、分段、转封装和音频编码能力。
+
 GitHub Actions 会自动把上传的 artifact 打成 zip，因此工作流直接上传 `dist` 下的应用目录，不再预先生成内层 zip。下载 `StreamCap-windows.zip` 后解压一次即可得到 `StreamCap` 文件夹。
 
 ## macOS 架构

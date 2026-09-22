@@ -440,6 +440,8 @@ class LiveStreamRecorder:
                 logger.info(f"Use Proxy: {masked_proxy}")
 
             self.recording.use_proxy = bool(request_proxy or self.proxy)
+            if self.platform_key == "kuaishou":
+                self.cookies = self.settings.cookies_config.get("kuaishou")
             handler = platform_handlers.get_platform_handler(
                 live_url=self.live_url,
                 proxy=request_proxy,
@@ -455,7 +457,12 @@ class LiveStreamRecorder:
                 logger.error(f"No handler found for platform: {self.recording.url}")
                 return None
 
-            stream_info = await handler.get_stream_info(self.live_url)
+            if isinstance(handler, platform_handlers.KuaishouHandler):
+                stream_info = await handler.get_stream_info(
+                    self.live_url, on_cookies=self.services.merge_kuaishou_cookies
+                )
+            else:
+                stream_info = await handler.get_stream_info(self.live_url)
             last_stream_info = stream_info
 
             if stream_info and (stream_info.extra or {}).get("account_status"):

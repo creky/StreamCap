@@ -100,8 +100,6 @@ def pyinstaller_command(args: argparse.Namespace, target_platform: str) -> list[
         add_data_arg(str(ROOT / "config"), "config", target_platform),
         "--add-data",
         add_data_arg(str(ROOT / "locales"), "locales", target_platform),
-        "--add-data",
-        add_data_arg(str(ROOT / "assets"), "assets", target_platform),
         "--hidden-import",
         "pyexpat",
         "--hidden-import",
@@ -117,9 +115,24 @@ def pyinstaller_command(args: argparse.Namespace, target_platform: str) -> list[
         "--noconfirm",
     ]
 
+    if target_platform == "windows":
+        for source in sorted((ROOT / "assets").rglob("*")):
+            if not source.is_file():
+                continue
+            if source.name.endswith("-Mac.otf") or source.suffix == ".icns" or "icon.iconset" in source.parts:
+                continue
+            destination = str(source.parent.relative_to(ROOT))
+            command.extend(["--add-data", add_data_arg(str(source), destination, target_platform)])
+        command.extend(["--exclude-module", "PIL.AvifImagePlugin", "--exclude-module", "PIL._avif"])
+    else:
+        command.extend(["--add-data", add_data_arg(str(ROOT / "assets"), "assets", target_platform)])
+
     ffmpeg_source = bundled_ffmpeg_source(target_platform)
     if args.bundle_ffmpeg and ffmpeg_source.is_file():
         command.extend(["--add-data", add_data_arg(str(ffmpeg_source), "ffmpeg", target_platform)])
+        ffmpeg_license = ffmpeg_source.parent / "LICENSE"
+        if ffmpeg_license.is_file():
+            command.extend(["--add-data", add_data_arg(str(ffmpeg_license), "ffmpeg", target_platform)])
     elif args.bundle_ffmpeg:
         print(f"Bundled FFmpeg not found, skipping: {ffmpeg_source}")
 

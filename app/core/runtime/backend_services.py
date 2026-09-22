@@ -37,6 +37,7 @@ class BackendServices:
         self.run_path = run_path
         self.config_manager = ConfigManager(run_path)
         self.settings_config = SettingsConfig(self)
+        self._cookies_update_lock = asyncio.Lock()
         self.proxy_manager = ProxyManager(self)
         self.language_manager = LanguageManager.create_headless(self)
 
@@ -58,6 +59,22 @@ class BackendServices:
         self._backend_loop: asyncio.AbstractEventLoop | None = None
         self._backend_thread: threading.Thread | None = None
         self._loop_ready = threading.Event()
+
+    async def merge_kuaishou_cookies(self, cookies: dict[str, str]) -> None:
+        if not cookies:
+            return
+        async with self._cookies_update_lock:
+            config = self.settings_config.cookies_config
+            current = {}
+            for item in (config.get("kuaishou") or "").split(";"):
+                name, separator, value = item.strip().partition("=")
+                if separator and name:
+                    current[name] = value
+            merged = current | cookies
+            if merged == current:
+                return
+            config["kuaishou"] = "; ".join(f"{name}={value}" for name, value in merged.items())
+            await self.config_manager.save_cookies_config(config)
 
     @classmethod
     def get(cls) -> BackendServices:
