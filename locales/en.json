@@ -113,6 +113,7 @@
     "search_keyword": "Enter search keyword"
   },
   "recording_manager": {
+    "NOT_RECORDING_TODAY": "Recording paused until tomorrow",
     "monitor_stopped": "Stopped monitoring",
     "is_live": "Live streaming in progress",
     "live_room": "Live Room",
@@ -142,6 +143,9 @@
     "no_ffmpeg_tip": "FFmpeg is not installed, please install FFmpeg first ⚠️"
   },
   "recording_card": {
+    "pause_today": "Stop recording for today",
+    "paused_today": "Paused",
+    "pause_today_tip": "Recording paused until tomorrow. Click Start monitoring to resume earlier.",
     "duplicate_recording": "Duplicate of {names}",
     "stop_monitor_tip": "Tip: Live monitoring has been stopped",
     "start_monitor_tip": "Tip: Live monitoring has been started",

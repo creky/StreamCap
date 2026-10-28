@@ -113,6 +113,7 @@
     "search_keyword": "输入搜索关键词"
   },
   "recording_manager": {
+    "NOT_RECORDING_TODAY": "今天不再录制，次日自动解除",
     "monitor_stopped": "停止监控中",
     "is_live": "直播中",
     "live_room": "直播间",
@@ -142,6 +143,9 @@
     "no_ffmpeg_tip": "未安装FFmpeg，请先安装FFmpeg ⚠️"
   },
   "recording_card": {
+    "pause_today": "今天不再录制",
+    "paused_today": "今日停录",
+    "pause_today_tip": "今天不再录制该主播，次日自动解除；点击开始监控可提前恢复",
     "duplicate_recording": "与「{names}」重复",
     "stop_monitor_tip": "提示：已停止直播监控👁️",
     "start_monitor_tip": "提示：已开启直播监控👁️",

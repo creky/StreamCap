@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 
 
 class Recording:
@@ -48,6 +48,7 @@ class Recording:
         self.quality = quality
         self.record_format = record_format
         self.monitor_status = monitor_status
+        self.skip_recording_date = None
         self.segment_record = segment_record
         self.segment_time = segment_time
         self.streamer_name = streamer_name
@@ -92,6 +93,10 @@ class Recording:
         self.record_url = None
         self.preview_url = None
 
+    @property
+    def paused_today(self) -> bool:
+        return self.skip_recording_date == date.today().isoformat()
+
     def to_dict(self):
         """Convert the Recording instance to a dictionary for saving."""
         return {
@@ -103,6 +108,7 @@ class Recording:
             "segment_record": self.segment_record,
             "segment_time": self.segment_time,
             "monitor_status": self.monitor_status,
+            "skip_recording_date": self.skip_recording_date,
             "scheduled_recording": self.scheduled_recording,
             "scheduled_start_time": self.scheduled_start_time,
             "monitor_hours": self.monitor_hours,
@@ -147,6 +153,7 @@ class Recording:
         recording.platform_key = data.get("platform_key")
         recording.live_url = data.get("live_url")
         recording.account_status = data.get("account_status")
+        recording.skip_recording_date = data.get("skip_recording_date")
         if recording.last_duration_str is not None:
             recording.last_duration = timedelta(seconds=float(recording.last_duration_str))
         return recording

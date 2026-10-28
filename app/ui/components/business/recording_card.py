@@ -83,10 +83,23 @@ class RecordingCardManager:
         )
 
         delete_button = ft.IconButton(
-            icon=ft.Icons.DELETE,
-            icon_color=ft.Colors.PRIMARY,
+            icon=ft.Icons.CLOSE,
+            icon_color=ft.Colors.RED,
+            icon_size=18,
+            width=28,
+            height=28,
+            padding=0,
+            top=0,
+            right=0,
             tooltip=self._["delete_monitor"],
             on_click=lambda e, rec=recording: self.app.page.run_task(self.recording_delete_button_click, e, rec),
+        )
+
+        pause_today_button = ft.IconButton(
+            icon=ft.Icons.EVENT_BUSY,
+            icon_color=ft.Colors.ORANGE if recording.paused_today else ft.Colors.PRIMARY,
+            tooltip=self._["pause_today"],
+            on_click=lambda e, rec=recording: self.app.page.run_task(self.pause_today_on_click, e, rec),
         )
 
         display_title = RecordingCardState.get_display_title(recording, self._)
@@ -162,7 +175,12 @@ class RecordingCardManager:
         card_container = ft.Container(
             content=ft.Column(
                 [
-                    title_row,
+                    ft.Stack(
+                        [
+                            ft.Container(content=title_row, padding=ft.Padding.only(right=32)),
+                            delete_button,
+                        ],
+                    ),
                     duration_text_label,
                     speed_text_label,
                     ft.Row(
@@ -172,7 +190,7 @@ class RecordingCardManager:
                             recording_info_button,
                             preview_button,
                             edit_button,
-                            delete_button,
+                            pause_today_button,
                             monitor_button,
                         ],
                         spacing=3,
@@ -193,6 +211,8 @@ class RecordingCardManager:
 
         return {
             "card": card,
+            "title_row": title_row,
+            "pause_today_button": pause_today_button,
             "display_title_label": display_title_label,
             "duration_label": duration_text_label,
             "speed_label": speed_text_label,
@@ -251,7 +271,7 @@ class RecordingCardManager:
         if not card or not card.content or not card.content.content:
             return
 
-        title_row = card.content.content.controls[0]
+        title_row = recording_card["title_row"]
         title_row.alignment = ft.MainAxisAlignment.START
         title_row.spacing = 6
         title_row.tight = True
@@ -312,6 +332,10 @@ class RecordingCardManager:
                     recording_card["monitor_button"].icon = self.get_icon_for_monitor_state(recording)
                     recording_card["monitor_button"].tooltip = self.get_tip_for_monitor_state(recording)
 
+                recording_card["pause_today_button"].icon_color = (
+                    ft.Colors.ORANGE if recording.paused_today else ft.Colors.PRIMARY
+                )
+
                 if recording_card["card"] and recording_card["card"].content:
                     recording_card["card"].content.bgcolor = self.get_card_background_color(recording)
                     recording_card["card"].content.border = ft.Border.all(2, self.get_card_border_color(recording))
@@ -335,8 +359,17 @@ class RecordingCardManager:
             except Exception as e:
                 logger.debug(f"Update card failed: {e}")
 
+    async def pause_today_on_click(self, _, recording: Recording):
+        await self.app.record_manager.pause_recording_today(recording)
+        await self.app.snack_bar.show_snack_bar(self._["pause_today_tip"])
+
     async def update_monitor_state(self, recording: Recording):
         """Update the monitor button state based on the current monitoring status."""
+        if recording.paused_today:
+            await self.app.record_manager.start_monitor_recording(recording)
+            await self.app.snack_bar.show_snack_bar(self._["start_monitor_tip"], ft.Colors.GREEN)
+            return
+        recording.skip_recording_date = None
         if recording.monitor_status:
             recording.update(
                 {
@@ -397,6 +430,9 @@ class RecordingCardManager:
 
     async def on_toggle_recording(self, recording: Recording):
         """Toggle the recording state for a specific recording."""
+        if recording and recording.paused_today:
+            await self.app.snack_bar.show_snack_bar(self._["pause_today_tip"])
+            return
         if recording and self.app.recording_enabled:
             if recording.is_recording:
                 self.app.record_manager.stop_recording(recording, manually_stopped=True)
@@ -480,6 +516,8 @@ class RecordingCardManager:
         return RecordingCardState.get_monitor_icon(recording)
 
     def get_tip_for_monitor_state(self, recording: Recording):
+        if recording.paused_today:
+            return self._["start_monitor"]
         return self._["stop_monitor"] if recording.monitor_status else self._["start_monitor"]
 
     async def update_duration_loop(self):

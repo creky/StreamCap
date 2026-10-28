@@ -487,6 +487,10 @@ class LiveStreamRecorder:
         Construct ffmpeg recording parameters and start recording
         """
 
+        if self.recording.paused_today:
+            self.recording.is_recording = False
+            self.recording.force_stop = False
+            return
         self.save_format, use_direct_download = self._get_record_format(stream_info)
         requested_save_format = self.save_format
         self.uses_temporary_ts_capture = False
@@ -625,7 +629,11 @@ class LiveStreamRecorder:
         """
 
         logger.info(f"Starting ffmpeg recording - recorder id: {id(self)}, rec_id: {self.recording.rec_id}")
-        self.should_stop = False
+        if self.should_stop or self.recording.paused_today:
+            self.recording.is_recording = False
+            self.recording.force_stop = False
+            await self.remove_active_recorder()
+            return False
         self.auto_stop_requested = False
         runtime_task = asyncio.current_task()
         self.services.recording_manager.register_runtime_task(runtime_task)
@@ -692,6 +700,7 @@ class LiveStreamRecorder:
                 if (
                     self.should_stop
                     or self.auto_stop_requested
+                    or self.recording.paused_today
                     or self.recording.force_stop
                     or not self.services.recording_enabled
                 ):
@@ -1096,7 +1105,11 @@ class LiveStreamRecorder:
         """
 
         logger.info(f"Starting direct download - recorder id: {id(self)}, rec_id: {self.recording.rec_id}")
-        self.should_stop = False
+        if self.should_stop or self.recording.paused_today:
+            self.recording.is_recording = False
+            self.recording.force_stop = False
+            await self.remove_active_recorder()
+            return False
         self.auto_stop_requested = False
         runtime_task = asyncio.current_task()
         self.services.recording_manager.register_runtime_task(runtime_task)
@@ -1132,6 +1145,7 @@ class LiveStreamRecorder:
                 if (
                     self.should_stop
                     or self.auto_stop_requested
+                    or self.recording.paused_today
                     or self.recording.force_stop
                     or not self.services.recording_enabled
                 ):

@@ -9,6 +9,8 @@ class RecordingCardState:
 
     @staticmethod
     def get_card_state(recording: Recording) -> CardStateType:
+        if recording.paused_today:
+            return CardStateType.STOPPED
         if recording.is_recording:
             return CardStateType.RECORDING
         elif recording.status_info in RecordingCardState.ERROR_STATUSES:
@@ -42,6 +44,12 @@ class RecordingCardState:
 
     @staticmethod
     def get_status_label_config(recording: Recording, language_dict: dict) -> dict:
+        if recording.paused_today:
+            return {
+                "text": language_dict.get("paused_today"),
+                "bgcolor": ft.Colors.ORANGE,
+                "text_color": ft.Colors.WHITE,
+            }
         state = RecordingCardState.get_card_state(recording)
 
         configs = {
@@ -82,7 +90,9 @@ class RecordingCardState:
     @staticmethod
     def get_display_title(recording: Recording, language_dict: dict) -> str:
         status_prefix = ""
-        if not recording.monitor_status:
+        if recording.paused_today:
+            status_prefix = f"[{language_dict.get('paused_today')}] "
+        elif not recording.monitor_status:
             status_prefix = f"[{language_dict.get('monitor_stopped')}] "
         return f"{status_prefix}{recording.title}"
 
@@ -102,4 +112,6 @@ class RecordingCardState:
 
     @staticmethod
     def get_monitor_icon(recording: Recording) -> ft.IconData:
+        if recording.paused_today:
+            return ft.Icons.VISIBILITY_OFF
         return ft.Icons.VISIBILITY if recording.monitor_status else ft.Icons.VISIBILITY_OFF

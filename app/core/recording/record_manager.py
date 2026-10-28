@@ -276,11 +276,24 @@ class RecordingManager:
         for attr, value in attrs_update.items():
             setattr(recording, attr, value)
 
+    async def pause_recording_today(self, recording: Recording):
+        backend_loop = self.services.backend_loop
+        if backend_loop is not None and backend_loop is not asyncio.get_running_loop():
+            return await asyncio.wrap_future(self.services.run_coro(self.pause_recording_today(recording)))
+        recording.skip_recording_date = datetime.now().date().isoformat()
+        self.stop_recording(recording, manually_stopped=True)
+        recording.status_info = RecordingStatus.NOT_RECORDING_TODAY
+        self.services.broadcast_card_update(recording)
+        self.services.broadcast_pubsub("update", recording)
+        await self.persist_recordings()
+
     async def start_monitor_recording(self, recording: Recording, auto_save: bool = True):
         """
         Start monitoring a single recording if it is not already being monitored.
         """
-        if not recording.monitor_status:
+        if not recording.monitor_status or recording.skip_recording_date:
+            recording.skip_recording_date = None
+            recording.detection_time = None
             recording.is_checking = True
             recording.is_live = False
             recording.showed_checking_status = False
@@ -304,6 +317,7 @@ class RecordingManager:
         """
         Stop monitoring a single recording if it is currently being monitored.
         """
+        recording.skip_recording_date = None
         if recording.monitor_status:
             await self._update_recording(
                 recording=recording,
@@ -385,6 +399,16 @@ class RecordingManager:
     async def check_all_live_status(self):
         """Check the live status of all recordings and update their display titles."""
         for recording in self.recordings:
+            if recording.paused_today:
+                continue
+            if recording.skip_recording_date:
+                recording.skip_recording_date = None
+                recording.detection_time = None
+                recording.status_info = (
+                    RecordingStatus.MONITORING if recording.monitor_status else RecordingStatus.STOPPED_MONITORING
+                )
+                await self.persist_recordings()
+                self.services.broadcast_card_update(recording)
             if recording.monitor_status and not recording.is_recording:
                 is_exceeded = utils.is_time_interval_exceeded(recording.detection_time, recording.loop_time_seconds)
                 if not recording.detection_time or is_exceeded:
@@ -435,6 +459,9 @@ class RecordingManager:
             return
         self.active_checks.add(recording.rec_id)
         try:
+            if recording.paused_today:
+                recording.status_info = RecordingStatus.NOT_RECORDING_TODAY
+                return
             recording.manually_stopped = False
             if recording.is_recording or recording.stopping_in_progress:
                 logger.debug(f"Skip check_if_live because recording is busy: {recording.url}")
@@ -565,6 +592,9 @@ class RecordingManager:
                 recording.update_title(self._[recording.quality])
                 await self.persist_recordings()
 
+            if recording.paused_today or not recording.monitor_status:
+                return
+
             if stream_info.is_live:
                 recording.live_title = stream_info.title
                 recording.title = f"{recording.streamer_name} - {self._[recording.quality]}"
@@ -645,6 +675,8 @@ class RecordingManager:
         finally:
             self.active_checks.discard(recording.rec_id)
             recording.is_checking = False
+            if recording.paused_today:
+                recording.status_info = RecordingStatus.NOT_RECORDING_TODAY
             if recording.status_info == RecordingStatus.STATUS_CHECKING:
                 recording.status_info = RecordingStatus.LIVE_STATUS_CHECK_ERROR
             self.services.broadcast_card_update(recording)
@@ -653,7 +685,7 @@ class RecordingManager:
     @staticmethod
     def start_update(recording: Recording):
         """Start the recording process."""
-        if recording.is_live and not recording.is_recording:
+        if recording.is_live and not recording.is_recording and not recording.paused_today:
             # Reset cumulative and last durations for a fresh start
             recording.update(
                 {
